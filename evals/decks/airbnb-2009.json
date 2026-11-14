@@ -1,0 +1,12 @@
+{
+  "pdf": "airbnb-2009.pdf",
+  "company_name": "Airbnb",
+  "about": "PitchDeckCoach reproduction of the 2009 AirBed&Breakfast deck. No team or funding slides.",
+  "items": [
+    {"slide": 4, "all": ["630"], "accept": ["confirmed", "cant_verify"], "want": "cant_verify", "note": "Couchsurfing usage figure from 2009; unlikely to be sourced."},
+    {"slide": 4, "all": ["17,000"], "accept": ["cant_verify"], "want": "cant_verify", "note": "Founders' own Craigslist count for one week."},
+    {"slide": 5, "all": ["1.9"], "accept": ["confirmed", "cant_verify"], "want": "cant_verify", "note": "TAM estimate."},
+    {"slide": 5, "all": ["532"], "accept": ["cant_verify"], "want": "cant_verify", "note": "SAM estimate, derived by the founders."},
+    {"slide": 10, "all": ["market"], "accept": ["differs", "cant_verify"], "want": "differs", "note": "VRBO (1995) and Couchsurfing (2004) offered home stays before Airbnb (2008)."}
+  ]
+}

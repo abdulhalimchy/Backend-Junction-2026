@@ -89,6 +89,14 @@ class CalaClient:
     def retrieve_entity(self, entity_id: str, query: dict | None = None) -> dict:
         return self._request("POST", f"/v1/entities/{entity_id}", json=query or {})
 
+    def knowledge_search(self, text: str) -> dict:
+        """Search sourced documents. `context` excerpts carry their page URLs; `content` is a summary."""
+        return self._request(
+            "POST",
+            "/v1/knowledge/search",
+            json={"input": text, "explainability": False, "return_entities": False},
+        )
+
     def knowledge_query(self, text: str) -> dict:
         return self._request("POST", "/v1/knowledge/query", json={"input": text, "return_entities": True})
 

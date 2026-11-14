@@ -10,7 +10,7 @@ class DeckClaimSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DeckClaim
-        fields = ("id", "slide", "claim", "category", "status", "on_record", "sources")
+        fields = ("id", "slide", "claim", "category", "status", "on_record", "sources", "basis")
 
 
 class DeckCheckSerializer(serializers.ModelSerializer):

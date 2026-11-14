@@ -55,6 +55,10 @@ class DeckClaim(BaseModel):
         # Unconfirmed claims are "can't verify", never "false".
         CANT_VERIFY = "cant_verify", "Can't verify"
 
+    class Basis(models.TextChoices):
+        RECORD = "record", "Cala record"
+        WEB = "web", "Web sources"
+
     deck_check = models.ForeignKey(DeckCheck, on_delete=models.CASCADE, related_name="claims")
     slide = models.PositiveIntegerField(validators=[MinValueValidator(1)])
     claim = models.TextField()
@@ -62,6 +66,12 @@ class DeckClaim(BaseModel):
     status = models.CharField(max_length=16, choices=Status.choices)
     on_record = models.TextField(blank=True, help_text="What Cala holds, when it confirms or differs.")
     sources = models.JSONField(default=list, blank=True)
+    basis = models.CharField(
+        max_length=8,
+        choices=Basis.choices,
+        blank=True,
+        help_text="Where a confirmed or differs verdict came from: Cala's record or searched web sources.",
+    )
 
     class Meta(BaseModel.Meta):
         ordering = ("slide", "created_at")

@@ -218,6 +218,8 @@ ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 MARKET_LLM_MODEL = env("MARKET_LLM_MODEL", default="gemini-4-hydrogen")
 # Run deck checks in a background thread after the upload returns. Set False to run inline (tests, debugging).
 DECK_CHECK_ASYNC = env.bool("DECK_CHECK_ASYNC", default=True)
+# Second pass: search Cala's sourced documents for each claim the structured record cannot settle.
+DECK_CHECK_WEB_SEARCH = env.bool("DECK_CHECK_WEB_SEARCH", default=True)
 
 # ---------------------------------------------------------------------------
 # Logging

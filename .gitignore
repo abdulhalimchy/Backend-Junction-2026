@@ -26,3 +26,7 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# Eval decks: keep PDFs local (public decks, but large); gold labels are committed.
+/evals/decks/*.pdf
+/evals/runs/

@@ -24,6 +24,7 @@ SRC = {
 def media_root(tmp_path, settings):
     settings.MEDIA_ROOT = tmp_path
     settings.CALA_API_KEY = "test-key"
+    settings.DECK_CHECK_WEB_SEARCH = False
 
 
 def patch_llm(monkeypatch, *, claims, verdicts, name="Northlight Robotics"):
@@ -355,3 +356,237 @@ def test_company_named_in_deck_wins_over_upload_hint(monkeypatch):
     assert seen["names"][0] == "AirBed&Breakfast"
     assert "Northlight Robotics" not in seen["names"]
     assert deck.company_name == "AirBed&Breakfast"
+
+
+def test_people_records_add_past_jobs_and_skip_namesakes():
+    cala = FakeCala()
+    co = cala.entities["co1"]
+    co["relationships"]["incoming"]["FOUNDED"] = [
+        {"id": "p1", "name": "Anna Virtanen", "properties": {"sources": [SRC]}}
+    ]
+    co["relationships"]["incoming"]["IS_CSO_OF"] = [
+        {"id": "p1", "name": "Anna Virtanen", "properties": {"sources": [SRC]}}
+    ]
+    cala.entities["p1"] = {
+        "id": "p1",
+        "name": "Anna Virtanen",
+        "relationships": {
+            "outgoing": {
+                "WORKS_AT": [
+                    {
+                        "id": "meta",
+                        "name": "Meta AI",
+                        "properties": {"sources": [SRC], "valid_until": "2023-04-01"},
+                    },
+                    {
+                        "id": "co1",
+                        "name": "Northlight Robotics Oy",
+                        "properties": {"role": "Chief Scientist", "sources": [SRC]},
+                    },
+                ],
+                "FOUNDED": [
+                    {"id": "co1", "name": "Northlight Robotics Oy", "properties": {"sources": [SRC]}}
+                ],
+                "INVESTED_IN": [{"id": "x9", "name": "Other Co", "properties": {"sources": []}}],
+            }
+        },
+    }
+    cala.search_entities = lambda name, types=None, limit=8: [
+        {"id": "n1", "name": "Mikko Laine"},
+        {"id": "n2", "name": "Mikko Laine"},
+    ]
+    b = EvidenceBuilder(cala)
+    b.add_company_facts(co)
+    b.add_people(co, ["Anna Virtanen", "Mikko Laine"])
+    texts = [e.text for e in b.items]
+
+    assert any("Anna Virtanen is recorded as Chief Scientist of" in t for t in texts)
+    assert "Anna Virtanen is recorded as working, now or in the past, at Meta AI until 2023-04-01." in texts
+    assert any("at Northlight Robotics Oy as Chief Scientist" in t for t in texts)
+    assert not any("Other Co" in t for t in texts)  # unsourced
+    assert not any("Mikko Laine" in t for t in texts)  # two namesakes: ambiguous, skipped
+    assert all(e.sources for e in b.items)
+
+
+def test_people_from_deck_reach_evidence(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pipeline, "build_evidence", lambda client, **kw: seen.update(kw) or ("", []))
+    monkeypatch.setattr(
+        llm,
+        "extract_claims",
+        lambda pdf: llm.DeckReading("Northlight", [], "", CLAIMS[:1], ["Anna Virtanen"]),
+    )
+    pipeline.run_deck_check(DeckCheckFactory().pk)
+    assert seen["people"] == ["Anna Virtanen"]
+
+
+# --- per-claim web search ---------------------------------------------------------
+
+from apps.deck_checks import search  # noqa: E402
+
+
+def web(i, n, *hosts):
+    return Evidence(
+        f"W{i}.{n}",
+        "Background. The company raised EUR 600k in its seed. More text.",
+        [
+            {"name": h, "document": f"https://{h}/p", "date": "", "date_precision": None, "source_rank": None}
+            for h in hosts
+        ],
+    )
+
+
+def test_web_search_settles_open_claims_with_two_sites(monkeypatch, settings):
+    settings.DECK_CHECK_WEB_SEARCH = True
+    patch_evidence(monkeypatch, [Evidence("E1", "Founded 2023-05", [SRC])])
+    patch_llm(
+        monkeypatch,
+        claims=CLAIMS,
+        verdicts=[
+            {"index": 0, "status": "confirmed", "on_record": "Founded May 2023", "evidence_ids": ["E1"]}
+        ],
+    )
+    asked = {}
+
+    def fake_search(client, company, claims):
+        asked.update(claims)
+        return {
+            1: [web(1, 1, "a.com"), web(1, 2, "b.org")],
+            2: [web(2, 1, "a.com"), web(2, 2, "www.a.com")],
+            3: [web(3, 1, "x.com"), web(3, 2, "y.com")],
+        }
+
+    monkeypatch.setattr(pipeline, "search_claims", fake_search)
+    monkeypatch.setattr(
+        llm,
+        "verify_claims_web",
+        lambda company, claims, found: [
+            {
+                "index": 1,
+                "status": "differs",
+                "on_record": "Raised 600k",
+                "evidence_ids": ["W1.1", "W1.2"],
+                "quote": "The company raised EUR 600k in its seed.",
+            },
+            {
+                "index": 2,
+                "status": "confirmed",
+                "on_record": "x",
+                "evidence_ids": ["W2.1", "W2.2"],
+            },  # one site only
+            {
+                "index": 3,
+                "status": "confirmed",
+                "on_record": "x",
+                "evidence_ids": ["W1.1", "W3.1"],
+            },  # W1.1 is not claim 3's
+            {
+                "index": 0,
+                "status": "differs",
+                "on_record": "x",
+                "evidence_ids": ["W1.1", "W1.2"],
+            },  # already settled
+        ],
+    )
+
+    result = pipeline.check_pdf(b"%PDF", client=object())
+    rows = result.rows
+
+    assert set(asked) == {1, 2, 3}  # only claims the record left open are searched
+    assert rows[0]["status"] == "confirmed" and rows[0]["basis"] == "record"
+    assert rows[1]["status"] == "differs" and rows[1]["basis"] == "web" and len(rows[1]["sources"]) == 2
+    assert rows[2]["status"] == "cant_verify" and rows[2]["basis"] == ""
+    assert rows[3]["status"] == "cant_verify"
+
+
+def test_search_uses_sourced_excerpts_only():
+    class Cala:
+        def knowledge_search(self, text):
+            assert "Northlight" in text
+            return {
+                "content": "A model-written summary that is never evidence.",
+                "context": [
+                    {
+                        "content": "Anna  Virtanen was CTO\nat Meta.",
+                        "origins": [
+                            {"source": {"name": "Site"}, "document": {"url": "https://www.site.com/a"}}
+                        ],
+                    },
+                    {"content": "No origin, so not evidence.", "origins": []},
+                ],
+            }
+
+    found = search.search_claims(Cala(), "Northlight", {4: "Anna Virtanen was CTO at Meta"})
+    assert [(e.id, e.text) for e in found[4]] == [("W4.1", "Anna Virtanen was CTO at Meta.")]
+    assert found[4][0].sources[0]["document"] == "https://www.site.com/a"
+    assert search.host("https://www.site.com/a") == "site.com"
+
+
+def test_failed_search_is_skipped():
+    class Cala:
+        def knowledge_search(self, text):
+            raise CalaError("down", 503)
+
+    assert search.search_claims(Cala(), "", {0: "x"}) == {}
+
+
+# --- evaluation scoring ----------------------------------------------------------
+
+from apps.deck_checks.evaluation import Gold, GoldItem, score  # noqa: E402
+
+
+def test_eval_scoring_matches_by_slide_and_keywords():
+    gold = Gold(
+        "t",
+        None,
+        "",
+        [
+            GoldItem(4, ["lample", "meta"], ["confirmed"], "confirmed", none=["llama"]),
+            GoldItem(4, ["lample", "llama"], ["confirmed", "cant_verify"], "cant_verify"),
+            GoldItem(1, ["2022"], ["confirmed", "cant_verify"], "confirmed"),
+            GoldItem(9, ["churn"], ["cant_verify"], "cant_verify"),
+        ],
+    )
+    rows = [
+        {"slide": 4, "claim": "Lample worked at Meta", "status": "differs"},
+        {"slide": 5, "claim": "Lample led Llama at Meta", "status": "confirmed"},
+        {"slide": 1, "claim": "Market was 10B in 2022", "status": "cant_verify"},
+        {"slide": 7, "claim": "Unlabelled", "status": "differs"},
+    ]
+    s = score(gold, rows)
+    assert [r["outcome"] for r in s["results"]] == ["wrong", "ok", "ok", "missed"]
+    t = s["totals"]
+    assert t["false_differs"] == 1 and t["missed"] == 1 and t["extra_differs"] == 1 and t["resolved"] == 3
+
+
+def test_web_verdict_without_a_real_quote_is_dropped(monkeypatch, settings):
+    settings.DECK_CHECK_WEB_SEARCH = True
+    patch_evidence(monkeypatch, [])
+    patch_llm(monkeypatch, claims=CLAIMS[:2], verdicts=[])
+    monkeypatch.setattr(
+        pipeline,
+        "search_claims",
+        lambda client, company, claims: {i: [web(i, 1, "a.com"), web(i, 2, "b.org")] for i in claims},
+    )
+    monkeypatch.setattr(
+        llm,
+        "verify_claims_web",
+        lambda company, claims, found: [
+            {
+                "index": 0,
+                "status": "differs",
+                "on_record": "x",
+                "evidence_ids": ["W0.1", "W0.2"],
+                "quote": "Investors were venture firms rather than content providers.",
+            },
+            {
+                "index": 1,
+                "status": "differs",
+                "on_record": "x",
+                "evidence_ids": ["W1.1", "W1.2"],
+                "quote": "",
+            },
+        ],
+    )
+    rows = pipeline.check_pdf(b"%PDF", client=object()).rows
+    assert [r["status"] for r in rows] == ["cant_verify", "cant_verify"]
