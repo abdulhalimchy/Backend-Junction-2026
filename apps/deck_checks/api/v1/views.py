@@ -1,7 +1,10 @@
+import uuid
+
 from django.db.models import Count
 from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.response import Response
 
@@ -29,12 +32,26 @@ class DeckCheckViewSet(
             return DeckCheck.objects.none()
         qs = (
             DeckCheck.objects.filter(user=self.request.user)
+            .filter(**self._startup_filter())
             .annotate(claim_count=Count("claims"))
             .order_by("-created_at")
         )
         if self.action == "retrieve":
             qs = qs.prefetch_related("claims")
         return qs
+
+    def _startup_filter(self) -> dict:
+        """?startup=<id> lists one startup's decks; ?startup=none those not tied to a startup (the demo
+        company). Without the parameter, every deck is listed (the investor view)."""
+        if self.action != "list" or "startup" not in self.request.query_params:
+            return {}
+        value = self.request.query_params["startup"]
+        if value in ("", "none"):
+            return {"startup__isnull": True}
+        try:
+            return {"startup_id": uuid.UUID(value)}
+        except ValueError as exc:
+            raise ValidationError({"startup": "Not a valid startup id."}) from exc
 
     def get_serializer_class(self):
         if self.action == "create":

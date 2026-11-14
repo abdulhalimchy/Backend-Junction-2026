@@ -24,6 +24,14 @@ class DeckCheck(BaseModel):
     file_name = models.CharField(max_length=255, help_text="Original filename as uploaded.")
     file_size = models.PositiveIntegerField()
     cala_company_id = models.CharField(max_length=128, blank=True, help_text="Company the deck is about.")
+    startup = models.ForeignKey(
+        "startups.Startup",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="deck_checks",
+        help_text="The founder's startup this deck is for. Empty for the demo company and investor uploads.",
+    )
     company_name = models.CharField(
         max_length=255,
         blank=True,

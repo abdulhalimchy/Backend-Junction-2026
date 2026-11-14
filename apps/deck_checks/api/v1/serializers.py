@@ -3,6 +3,7 @@ from rest_framework import serializers
 
 from apps.core.serializers import SourceSerializer
 from apps.deck_checks.models import DeckCheck, DeckClaim
+from apps.startups.models import Startup
 
 
 class DeckClaimSerializer(serializers.ModelSerializer):
@@ -26,6 +27,7 @@ class DeckCheckSerializer(serializers.ModelSerializer):
             "file_size",
             "cala_company_id",
             "company_name",
+            "startup",
             "pages",
             "status",
             "error",
@@ -53,6 +55,19 @@ class DeckCheckUploadSerializer(serializers.Serializer):
     file = serializers.FileField(help_text="PDF pitch deck.")
     cala_company_id = serializers.CharField(max_length=128, required=False, allow_blank=True, default="")
     company_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    startup = serializers.PrimaryKeyRelatedField(
+        queryset=Startup.objects.none(),  # narrowed to the uploader's own startups in __init__
+        required=False,
+        allow_null=True,
+        default=None,
+        help_text="One of your startups; the deck is listed under it.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            self.fields["startup"].queryset = Startup.objects.filter(user=request.user, is_draft=False)
 
     def validate_file(self, file):
         max_bytes = settings.DECK_CHECK_MAX_UPLOAD_MB * 1024 * 1024
