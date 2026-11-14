@@ -6,7 +6,11 @@ venv/
 *.egg-info/
 
 # Django
+# Environment files hold secrets (DJANGO_SECRET_KEY, CALA_API_KEY). Only the
+# template is committed.
 .env
+.env.*
+!.env.example
 db.sqlite3
 db.sqlite3-journal
 /staticfiles/

@@ -201,6 +201,13 @@ CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 
 # ---------------------------------------------------------------------------
+# Third-party services
+# ---------------------------------------------------------------------------
+# Cala knowledge graph. Sent as the X-API-KEY header; never expose it to clients.
+CALA_API_BASE_URL = env("CALA_API_BASE_URL", default="https://api.cala.ai")
+CALA_API_KEY = env("CALA_API_KEY", default="")
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 LOG_LEVEL = env("DJANGO_LOG_LEVEL", default="INFO")
