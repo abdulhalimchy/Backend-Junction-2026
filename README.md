@@ -48,6 +48,7 @@ apps/
   alerts/             per-user notifications, with read/unread state
   networking/         the user's private "met" list
   deck_checks/        PDF pitch-deck uploads and per-claim verification results
+  watchlist/          companies, investors and people a user watches (tags, notes)
 requirements/         base.txt, development.txt, production.txt
 ```
 
@@ -99,8 +100,11 @@ DRF `NamespaceVersioning` reads the namespace, so `request.version == "v1"`. URL
 | GET, PATCH, DELETE | `/api/v1/networking/met/{id}/` | bearer | One met entry |
 | GET, POST | `/api/v1/deck-checks/` | bearer | List your deck checks, or upload a PDF (`multipart/form-data`) |
 | GET, DELETE | `/api/v1/deck-checks/{id}/` | bearer | One deck check with its claims; delete also removes the file |
+| GET, POST | `/api/v1/watchlist/` | bearer | List (`?type=`, `?tag=` or `none`, `?cala_id=`, `?q=`) or watch an entity; watching it again returns the existing item (200) |
+| GET, PATCH, DELETE | `/api/v1/watchlist/{id}/` | bearer | One watch item; PATCH changes `name`, `tag`, `note` only |
+| GET | `/api/v1/watchlist/summary/` | bearer | `{"total", "by_type", "by_tag"}` for the "Watching N" panel |
 
-Users only ever see their own alerts, met entries and deck checks; anyone else's return 404. Events are read-only over the API and managed in the admin for now (later by a Cala sync job). Alerts are created by the backend, never by clients.
+Users only ever see their own alerts, met entries, deck checks and watch items; anyone else's return 404. Events are read-only over the API and managed in the admin for now (later by a Cala sync job). Alerts are created by the backend, never by clients.
 
 Deck uploads are checked for size (`DECK_CHECK_MAX_UPLOAD_MB`, 20 by default), a `.pdf` name and real PDF content, and are stored under a random name. After the upload returns, a background thread (`apps/deck_checks/pipeline.py`) runs the check: `pending` → `processing` → `completed` or `failed` (poll `GET /deck-checks/{id}/`; `POST /deck-checks/{id}/retry/` re-runs a failed one).
 
