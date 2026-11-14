@@ -1,0 +1,110 @@
+from drf_spectacular.utils import extend_schema
+from rest_framework import generics, serializers, status
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
+from apps.accounts import services
+from apps.accounts.models import User
+
+from .serializers import (
+    AuthResponseSerializer,
+    ChangePasswordSerializer,
+    LoginSerializer,
+    LogoutSerializer,
+    ProfileSerializer,
+    RegisterSerializer,
+    UserSerializer,
+)
+
+
+class AuthThrottleMixin:
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth"
+
+
+@extend_schema(tags=["auth"])
+class RegisterView(AuthThrottleMixin, APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    @extend_schema(request=RegisterSerializer, responses={201: AuthResponseSerializer})
+    def post(self, request):
+        serializer = RegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = services.register_user(**serializer.validated_data)
+        payload = {**services.issue_tokens(user), "user": UserSerializer(user).data}
+        return Response(payload, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(tags=["auth"], responses={200: AuthResponseSerializer})
+class LoginView(AuthThrottleMixin, TokenObtainPairView):
+    serializer_class = LoginSerializer
+
+
+@extend_schema(tags=["auth"])
+class RefreshView(TokenRefreshView):
+    pass
+
+
+@extend_schema(tags=["auth"])
+class LogoutView(APIView):
+    """Blacklists the given refresh token. The short-lived access token simply expires."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=LogoutSerializer, responses={205: None})
+    def post(self, request):
+        serializer = LogoutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            token = RefreshToken(serializer.validated_data["refresh"])
+            if str(token["user_id"]) != str(request.user.pk):
+                raise TokenError("Token does not belong to this user.")
+            token.blacklist()
+        except TokenError as exc:
+            raise serializers.ValidationError({"refresh": [str(exc)]}) from exc
+        return Response(status=status.HTTP_205_RESET_CONTENT)
+
+
+@extend_schema(tags=["me"])
+class MeView(generics.RetrieveUpdateAPIView):
+    """The signed-in user's account."""
+
+    serializer_class = UserSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_object(self):
+        return User.objects.select_related("profile").get(pk=self.request.user.pk)
+
+
+@extend_schema(tags=["me"])
+class MyProfileView(generics.RetrieveUpdateAPIView):
+    """The signed-in user's profile: role, goals, Cala links, privacy and onboarding state."""
+
+    serializer_class = ProfileSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_object(self):
+        return self.request.user.profile
+
+    def perform_update(self, serializer):
+        services.update_profile(profile=serializer.instance, data=dict(serializer.validated_data))
+
+
+@extend_schema(tags=["me"])
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=ChangePasswordSerializer, responses={204: None})
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        services.change_password(user=request.user, new_password=serializer.validated_data["new_password"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
