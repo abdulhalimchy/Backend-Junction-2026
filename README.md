@@ -102,7 +102,13 @@ DRF `NamespaceVersioning` reads the namespace, so `request.version == "v1"`. URL
 
 Users only ever see their own alerts, met entries and deck checks; anyone else's return 404. Events are read-only over the API and managed in the admin for now (later by a Cala sync job). Alerts are created by the backend, never by clients.
 
-Deck uploads are checked for size (`DECK_CHECK_MAX_UPLOAD_MB`, 20 by default), a `.pdf` name and real PDF content, and are stored under a random name. A new deck check stays `pending`: extracting claims and verifying them against Cala isn't built yet (`apps/deck_checks/services.py` marks where it plugs in).
+Deck uploads are checked for size (`DECK_CHECK_MAX_UPLOAD_MB`, 20 by default), a `.pdf` name and real PDF content, and are stored under a random name. After the upload returns, a background thread (`apps/deck_checks/pipeline.py`) runs the check: `pending` → `processing` → `completed` or `failed` (poll `GET /deck-checks/{id}/`; `POST /deck-checks/{id}/retry/` re-runs a failed one).
+
+1. The LLM (Gemini by default) reads the PDF natively (text, slide images, charts, so scanned decks work) and returns the factual claims with their slide number (`llm.extract_claims`).
+2. The company is found in Cala (`cala_company_id`, else exact name match on `company_name`, else the name read from the deck) and its sourced facts are gathered as numbered evidence: founding date, HQ, headcount, funding rounds, investors, competitors (`evidence.py`).
+3. The LLM gives each claim a verdict using only that evidence (`llm.verify_claims`). A verdict is only kept as `confirmed` or `differs` if it cites sourced evidence; everything else is `cant_verify` ("not on record", never "false"). The sources shown come from Cala, never from the model.
+
+Needs `CALA_API_KEY` and `GEMINI_API_KEY` (or `ANTHROPIC_API_KEY` with `DECK_CHECK_LLM_PROVIDER=anthropic`); set `DECK_CHECK_LLM_MODEL` to the exact model id. `DECK_CHECK_ASYNC=False` runs the check inline (tests, debugging). A thread is enough for one process; move `services.enqueue` to a task queue to scale.
 
 Facts that come from Cala (`Event.sources`, `Alert.sources`, `DeckClaim.sources`, ...) are stored as JSON lists in the frontend's `Source` shape, defined once in `apps/core/serializers.py`.
 

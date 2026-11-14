@@ -25,6 +25,7 @@ class DeckCheckSerializer(serializers.ModelSerializer):
             "file_name",
             "file_size",
             "cala_company_id",
+            "company_name",
             "pages",
             "status",
             "error",
@@ -51,6 +52,7 @@ class DeckCheckDetailSerializer(DeckCheckSerializer):
 class DeckCheckUploadSerializer(serializers.Serializer):
     file = serializers.FileField(help_text="PDF pitch deck.")
     cala_company_id = serializers.CharField(max_length=128, required=False, allow_blank=True, default="")
+    company_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
 
     def validate_file(self, file):
         max_bytes = settings.DECK_CHECK_MAX_UPLOAD_MB * 1024 * 1024

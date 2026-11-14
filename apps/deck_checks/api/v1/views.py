@@ -1,6 +1,7 @@
 from django.db.models import Count
 from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.response import Response
 
@@ -50,6 +51,13 @@ class DeckCheckViewSet(
         serializer.is_valid(raise_exception=True)
         deck_check = services.create_deck_check(user=request.user, **serializer.validated_data)
         return Response(DeckCheckSerializer(deck_check).data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(request=None, responses={202: DeckCheckSerializer})
+    @action(detail=True, methods=["post"])
+    def retry(self, request, pk=None):
+        """Run a failed check again."""
+        deck_check = services.retry_deck_check(self.get_object())
+        return Response(DeckCheckSerializer(deck_check).data, status=status.HTTP_202_ACCEPTED)
 
     def perform_destroy(self, instance):
         services.delete_deck_check(instance)

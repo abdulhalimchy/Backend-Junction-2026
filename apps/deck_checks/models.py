@@ -24,6 +24,11 @@ class DeckCheck(BaseModel):
     file_name = models.CharField(max_length=255, help_text="Original filename as uploaded.")
     file_size = models.PositiveIntegerField()
     cala_company_id = models.CharField(max_length=128, blank=True, help_text="Company the deck is about.")
+    company_name = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Used to find the company in Cala; taken from the deck if empty.",
+    )
     pages = models.PositiveIntegerField(null=True, blank=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True)
     error = models.TextField(blank=True)

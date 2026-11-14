@@ -207,6 +207,15 @@ CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 CALA_API_BASE_URL = env("CALA_API_BASE_URL", default="https://api.cala.ai")
 CALA_API_KEY = env("CALA_API_KEY", default="")
 
+# LLM for deck checks: reads the deck (claim extraction) and compares claims with Cala evidence (verdicts).
+# Provider "gemini" (default) or "anthropic". Leave DECK_CHECK_LLM_MODEL empty for the provider's default.
+DECK_CHECK_LLM_PROVIDER = env("DECK_CHECK_LLM_PROVIDER", default="gemini")
+DECK_CHECK_LLM_MODEL = env("DECK_CHECK_LLM_MODEL", default="")
+GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
+ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+# Run deck checks in a background thread after the upload returns. Set False to run inline (tests, debugging).
+DECK_CHECK_ASYNC = env.bool("DECK_CHECK_ASYNC", default=True)
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------

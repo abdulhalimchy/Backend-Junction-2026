@@ -15,3 +15,8 @@ PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 REST_FRAMEWORK["DEFAULT_THROTTLE_CLASSES"] = []  # noqa: F405
 
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+
+DECK_CHECK_ASYNC = False
+CALA_API_KEY = ""
+ANTHROPIC_API_KEY = ""
+GEMINI_API_KEY = ""
