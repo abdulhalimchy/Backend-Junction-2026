@@ -35,8 +35,6 @@ class ProfileSerializer(serializers.ModelSerializer):
             "onboarding_completed",
             "onboarding_completed_at",
             "show_in_event_directory",
-            "show_card_in_search",
-            "share_met_list",
             "allow_alerts_email",
             "created_at",
             "updated_at",
