@@ -30,6 +30,22 @@ def is_configured() -> bool:
     return bool(settings.CALA_API_KEY)
 
 
+_http: httpx.Client | None = None
+
+
+def _client() -> httpx.Client:
+    """
+    One shared client per process: connections are reused instead of opened per request (httpx.Client is
+    thread-safe). Connects over IPv4: httpx tries addresses one by one, so on networks where IPv6 is broken
+    every request first waits out the connect timeout on each of Cala's IPv6 addresses (~30s per call).
+    """
+    global _http
+    if _http is None:
+        ipv4 = httpx.HTTPTransport(local_address="0.0.0.0")  # noqa: S104 - outgoing source address, not a listener
+        _http = httpx.Client(timeout=TIMEOUT, transport=ipv4)
+    return _http
+
+
 class CalaClient:
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
         self.api_key = api_key if api_key is not None else settings.CALA_API_KEY
@@ -41,13 +57,12 @@ class CalaClient:
         # Retry transient failures (gateway errors, rate limits, dropped connections) with a short backoff.
         for attempt in range(RETRIES + 1):
             try:
-                res = httpx.request(
+                res = _client().request(
                     method,
                     f"{self.base_url}{path}",
                     headers={"X-API-KEY": self.api_key},
                     json=json,
                     params=params,
-                    timeout=TIMEOUT,
                 )
             except httpx.TransportError as exc:
                 if attempt == RETRIES:
