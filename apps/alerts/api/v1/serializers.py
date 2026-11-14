@@ -16,6 +16,7 @@ class AlertSerializer(serializers.ModelSerializer):
             "kind",
             "title",
             "body",
+            "reason",
             "href",
             "event",
             "occurred_on",
@@ -31,3 +32,12 @@ class UnreadCountSerializer(serializers.Serializer):
 
 class MarkedReadSerializer(serializers.Serializer):
     marked_read = serializers.IntegerField()
+
+
+class ScanResultSerializer(serializers.Serializer):
+    entities = serializers.IntegerField(help_text="Cala entities checked.")
+    alerts_created = serializers.IntegerField()
+    skipped = serializers.IntegerField(help_text="Watched ids that are demo fixtures, not Cala entities.")
+    errors = serializers.DictField(
+        child=serializers.CharField(), help_text="Cala id -> error, per failed entity."
+    )

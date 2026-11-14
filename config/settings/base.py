@@ -164,6 +164,7 @@ REST_FRAMEWORK = {
         "anon": env("THROTTLE_ANON", default="60/minute"),
         "user": env("THROTTLE_USER", default="600/minute"),
         "auth": env("THROTTLE_AUTH", default="10/minute"),
+        "alert_scan": env("THROTTLE_ALERT_SCAN", default="20/hour"),
     },
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
 }
@@ -208,6 +209,10 @@ CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 # Cala knowledge graph. Sent as the X-API-KEY header; never expose it to clients.
 CALA_API_BASE_URL = env("CALA_API_BASE_URL", default="https://api.cala.ai")
 CALA_API_KEY = env("CALA_API_KEY", default="")
+
+# Alert scan (apps/alerts/scan.py): funding rounds dated within this many days count as news, including the
+# first time an entity is scanned. Older rounds are history, not alerts.
+ALERT_BACKFILL_DAYS = env.int("ALERT_BACKFILL_DAYS", default=60)
 
 # LLM for deck checks: reads the deck (claim extraction) and compares claims with Cala evidence (verdicts).
 # Provider "gemini" (default) or "anthropic". Leave DECK_CHECK_LLM_MODEL empty for the provider's default.
