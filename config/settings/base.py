@@ -97,6 +97,9 @@ DATABASES = {
 }
 DATABASES["default"]["ATOMIC_REQUESTS"] = True
 DATABASES["default"]["CONN_MAX_AGE"] = env.int("DATABASE_CONN_MAX_AGE", default=0)
+if DATABASES["default"]["ENGINE"].endswith("sqlite3"):
+    # Background analyses write while requests run: wait for SQLite's write lock instead of failing at 5s.
+    DATABASES["default"].setdefault("OPTIONS", {}).setdefault("timeout", 20)
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -166,6 +169,8 @@ REST_FRAMEWORK = {
         "user": env("THROTTLE_USER", default="600/minute"),
         "auth": env("THROTTLE_AUTH", default="10/minute"),
         "alert_scan": env("THROTTLE_ALERT_SCAN", default="20/hour"),
+        # Cala gateway for the frontend: one page can need 100+ entity lookups. Cala's own limits still apply.
+        "cala": env("THROTTLE_CALA", default="3000/minute"),
     },
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
 }
