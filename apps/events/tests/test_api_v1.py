@@ -3,7 +3,8 @@ import datetime
 import pytest
 from django.urls import reverse
 
-from apps.events.models import EventAttendance
+from apps.accounts.tests.factories import UserFactory
+from apps.events.models import EventAttendance, SideEventRSVP
 
 from .factories import EventAttendanceFactory, EventFactory
 
@@ -52,3 +53,43 @@ def test_inactive_events_are_hidden(auth_client):
     response = auth_client.get(reverse("v1:events:event-detail", kwargs={"slug": "old"}))
 
     assert response.status_code == 404
+
+
+def rsvps_url(event):
+    return reverse("v1:events:event-rsvps", kwargs={"slug": event.slug})
+
+
+def test_rsvp_add_list_and_remove(auth_client):
+    event = EventFactory()
+
+    first = auth_client.post(rsvps_url(event), {"side_event_id": "nordic-vc-breakfast"}, format="json")
+    again = auth_client.post(rsvps_url(event), {"side_event_id": "nordic-vc-breakfast"}, format="json")
+
+    assert first.status_code == 201
+    assert again.status_code == 200
+    assert again.json() == {"mine": ["nordic-vc-breakfast"], "counts": {"nordic-vc-breakfast": 1}}
+
+    url = reverse(
+        "v1:events:event-rsvp-delete",
+        kwargs={"slug": event.slug, "side_event_id": "nordic-vc-breakfast"},
+    )
+    assert auth_client.delete(url).status_code == 204
+    assert auth_client.get(rsvps_url(event)).json() == {"mine": [], "counts": {}}
+
+
+def test_rsvp_counts_are_anonymous_and_mine_is_per_user(auth_client):
+    event = EventFactory()
+    other = UserFactory()
+    SideEventRSVP.objects.create(user=other, event=event, side_event_id="climate-dinner")
+
+    body = auth_client.get(rsvps_url(event)).json()
+
+    assert body == {"mine": [], "counts": {"climate-dinner": 1}}
+
+
+def test_rsvp_rejects_bad_ids(auth_client):
+    event = EventFactory()
+
+    response = auth_client.post(rsvps_url(event), {"side_event_id": "not a slug!"}, format="json")
+
+    assert response.status_code == 400

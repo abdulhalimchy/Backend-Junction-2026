@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Event, EventAttendance
+from .models import Event, EventAttendance, SideEventRSVP
 
 
 @admin.register(Event)
@@ -17,3 +17,11 @@ class EventAttendanceAdmin(admin.ModelAdmin):
     list_filter = ("event", "entity_type")
     search_fields = ("name", "cala_entity_id")
     list_select_related = ("event",)
+
+
+@admin.register(SideEventRSVP)
+class SideEventRSVPAdmin(admin.ModelAdmin):
+    list_display = ("side_event_id", "user", "event", "created_at")
+    list_filter = ("event",)
+    search_fields = ("side_event_id", "user__email")
+    list_select_related = ("event", "user")

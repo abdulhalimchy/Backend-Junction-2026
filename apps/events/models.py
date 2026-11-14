@@ -51,3 +51,24 @@ class EventAttendance(BaseModel):
 
     def __str__(self):
         return f"{self.name} @ {self.event}"
+
+
+class SideEventRSVP(BaseModel):
+    """A user saying they will go to one side event of an event week (e.g. a Slush Week dinner).
+
+    Side events are not stored here: they are curated in the frontend from public listings and identified by
+    a stable slug (`side_event_id`). Other users only ever see anonymous counts.
+    """
+
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="side_event_rsvps")
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="side_event_rsvps")
+    side_event_id = models.SlugField(max_length=120)
+
+    class Meta(BaseModel.Meta):
+        constraints = [
+            models.UniqueConstraint(fields=("user", "event", "side_event_id"), name="unique_side_event_rsvp"),
+        ]
+        indexes = [models.Index(fields=("event", "side_event_id"))]
+
+    def __str__(self):
+        return f"{self.user} → {self.side_event_id} ({self.event})"
