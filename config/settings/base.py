@@ -239,6 +239,9 @@ ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 MARKET_LLM_MODEL = env("MARKET_LLM_MODEL", default="gemini-4-hydrogen")
 # Run deck checks in a background thread after the upload returns. Set False to run inline (tests, debugging).
 DECK_CHECK_ASYNC = env.bool("DECK_CHECK_ASYNC", default=True)
+# A check still pending or processing this long after its last update was cut off (the thread dies with the
+# process, e.g. on a restart or autoreload). It is marked failed so it can be retried. Slowest seen: ~7 min.
+DECK_CHECK_STALE_MINUTES = env.int("DECK_CHECK_STALE_MINUTES", default=20)
 # Second pass: search Cala's sourced documents for each claim the structured record cannot settle.
 DECK_CHECK_WEB_SEARCH = env.bool("DECK_CHECK_WEB_SEARCH", default=True)
 

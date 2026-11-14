@@ -1,13 +1,20 @@
 """Write-side logic for deck checks."""
 
+import logging
 import threading
+from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from . import pipeline
 from .models import DeckCheck
+
+logger = logging.getLogger(__name__)
+
+INTERRUPTED = "The check was interrupted before it finished (the server restarted). Retry it."
 
 
 @transaction.atomic
@@ -35,6 +42,23 @@ def enqueue(deck_id) -> None:
         ).start()
     else:
         pipeline.run_deck_check(deck_id)
+
+
+def fail_stale_deck_checks(queryset) -> int:
+    """Mark checks that stopped updating as failed, so the page stops waiting and offers Retry.
+
+    The check runs in a thread inside the web process; when that process restarts, the thread is gone and
+    the row would stay "processing" forever. Done on read rather than at startup, so it is safe with several
+    workers.
+    """
+    now = timezone.now()
+    cutoff = now - timedelta(minutes=settings.DECK_CHECK_STALE_MINUTES)
+    n = queryset.filter(
+        status__in=(DeckCheck.Status.PENDING, DeckCheck.Status.PROCESSING), updated_at__lt=cutoff
+    ).update(status=DeckCheck.Status.FAILED, error=INTERRUPTED, checked_at=now, updated_at=now)
+    if n:
+        logger.warning("Marked %d interrupted deck check(s) as failed", n)
+    return n
 
 
 def retry_deck_check(deck_check: DeckCheck) -> DeckCheck:

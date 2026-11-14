@@ -30,6 +30,8 @@ class DeckCheckViewSet(
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):  # schema generation, no real user
             return DeckCheck.objects.none()
+        if self.action in ("list", "retrieve"):
+            services.fail_stale_deck_checks(DeckCheck.objects.filter(user=self.request.user))
         qs = (
             DeckCheck.objects.filter(user=self.request.user)
             .filter(**self._startup_filter())

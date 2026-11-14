@@ -1,5 +1,8 @@
+from datetime import timedelta
+
 import pytest
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.deck_checks.models import DeckCheck
 
@@ -87,3 +90,39 @@ def test_delete_removes_row_and_file(auth_client, user, media_root, django_captu
     assert response.status_code == 204
     assert not DeckCheck.objects.exists()
     assert not path.exists()
+
+
+def _backdate(deck, minutes):
+    DeckCheck.objects.filter(pk=deck.pk).update(updated_at=timezone.now() - timedelta(minutes=minutes))
+
+
+def test_interrupted_check_is_failed_on_read_and_can_be_retried(auth_client, user, settings):
+    settings.DECK_CHECK_STALE_MINUTES = 20
+    deck = DeckCheckFactory(user=user, status=DeckCheck.Status.PROCESSING)
+    _backdate(deck, 30)
+
+    body = auth_client.get(detail_url(deck)).json()
+
+    assert body["status"] == "failed"
+    assert "interrupted" in body["error"]
+    retry_url = reverse("v1:deck_checks:deck-check-retry", kwargs={"pk": deck.pk})
+    assert auth_client.post(retry_url).status_code == 202
+
+
+def test_running_check_is_left_alone(auth_client, user, settings):
+    settings.DECK_CHECK_STALE_MINUTES = 20
+    deck = DeckCheckFactory(user=user, status=DeckCheck.Status.PROCESSING)
+    _backdate(deck, 5)
+
+    assert auth_client.get(LIST_URL).json()["results"][0]["status"] == "processing"
+
+
+def test_stale_check_of_another_user_is_untouched(auth_client, settings):
+    settings.DECK_CHECK_STALE_MINUTES = 20
+    other = DeckCheckFactory(status=DeckCheck.Status.PENDING)
+    _backdate(other, 60)
+
+    auth_client.get(LIST_URL)
+
+    other.refresh_from_db()
+    assert other.status == DeckCheck.Status.PENDING
