@@ -177,4 +177,30 @@ python manage.py check --deploy
 gunicorn config.wsgi:application
 ```
 
+### Deploy checklist
+
+- [ ] Environment variables set (above), plus `CALA_API_KEY`, `GEMINI_API_KEY`, and `ALERT_SCAN_TIME` / `ALERT_SCAN_TIMEZONE` if 02:00 Helsinki time is not right.
+- [ ] `python manage.py migrate` run against the production database.
+- [ ] Web process running: `gunicorn config.wsgi:application`.
+- [ ] **Nightly alert scan scheduled** (pick one; the web process does not run it in production):
+  - **A worker process** that runs next to the web process and stays up:
+    `python manage.py run_alert_scheduler`. Run exactly one. On Heroku, Railway or Render, add it as a worker /
+    background worker, e.g. in a `Procfile`:
+
+    ```
+    web: gunicorn config.wsgi:application
+    worker: python manage.py run_alert_scheduler
+    ```
+
+  - **A cron job** that calls `python manage.py scan_alerts --nightly`. It only scans when the night's run is due,
+    so calling it hourly is safe and retries a failed night. On a server, `crontab -e`:
+
+    ```
+    0 * * * * cd /srv/warmline-backend && .venv/bin/python manage.py scan_alerts --nightly >> /var/log/warmline-alerts.log 2>&1
+    ```
+
+    On Render, Railway or Fly.io, create a cron job with schedule `0 * * * *` and the same command.
+- [ ] After the first night, confirm a "Nightly schedule" run with status "Finished" in the admin (Alerts → Scan runs),
+  or check `GET /api/v1/alerts/schedule/` (`last_nightly`).
+
 Uploaded files are only served by Django in development. Before production, move media to private object storage (for example S3 via `django-storages`) and serve decks through short-lived signed URLs.
