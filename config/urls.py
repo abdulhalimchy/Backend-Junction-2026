@@ -25,6 +25,7 @@ api_v1_patterns = [
     path("alerts/", include("apps.alerts.api.v1.urls")),
     path("networking/", include("apps.networking.api.v1.urls")),
     path("deck-checks/", include("apps.deck_checks.api.v1.urls")),
+    path("markets/", include("apps.markets.api.v1.urls")),
 ]
 
 urlpatterns = [
