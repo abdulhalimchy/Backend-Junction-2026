@@ -38,8 +38,29 @@ COMPANY_RELATIONSHIPS = {
         "FOUNDED": {"limit": 10},
         "IS_CEO_OF": {"limit": 5},
         "IS_CTO_OF": {"limit": 5},
+        "IS_CSO_OF": {"limit": 5},
     },
 }
+# Roles linking a person to the company: their records are where past jobs and other companies live.
+ROLE_RELATIONSHIPS = {
+    "FOUNDED": "a founder of",
+    "IS_CEO_OF": "CEO of",
+    "IS_CTO_OF": "CTO of",
+    "IS_CSO_OF": "Chief Scientist of",
+}
+PERSON_RELATIONSHIPS = {
+    "outgoing": {
+        "WORKS_AT": {"limit": 15},
+        "FOUNDED": {"limit": 10},
+        "IS_CEO_OF": {"limit": 5},
+        "IS_CTO_OF": {"limit": 5},
+        "IS_CSO_OF": {"limit": 5},
+        "INVESTED_IN": {"limit": 10},
+        "STUDIED_AT": {"limit": 5},
+        "IS_MEMBER_OF": {"limit": 10},
+    }
+}
+MAX_PEOPLE = 10
 # Exact-name candidates to compare when several legal entities share a name (brand, group, subsidiaries).
 MAX_CANDIDATES = 6
 LEGAL_SUFFIXES = {
@@ -173,7 +194,7 @@ class EvidenceBuilder:
                 )
 
         incoming = e.get("relationships", {}).get("incoming", {})
-        for rel, label in (("FOUNDED", "a founder of"), ("IS_CEO_OF", "CEO of"), ("IS_CTO_OF", "CTO of")):
+        for rel, label in ROLE_RELATIONSHIPS.items():
             for person in incoming.get(rel, []):
                 props = person.get("properties", {})
                 since = f" (since {str(props['valid_since'])[:10]})" if props.get("valid_since") else ""
@@ -251,6 +272,76 @@ class EvidenceBuilder:
         sources += [s for x in backers for s in to_sources(x.get("properties", {}).get("sources"))]
         unique = list({(s["name"], s["document"]): s for s in sources}.values())
         return text, unique
+
+    def add_people(self, company: dict, names: list[str]) -> None:
+        """Sourced records of the company's founders and executives, and of the people the deck names.
+
+        A person's own record holds their past employers, other companies and education, which is what team
+        slides claim. A name the company is not linked to is looked up only when exactly one person in Cala
+        has that name, so a namesake is not mistaken for the founder.
+        """
+        incoming = (company.get("relationships") or {}).get("incoming", {})
+        ids: dict[str, str] = {}
+        for rel in ROLE_RELATIONSHIPS:
+            for p in incoming.get(rel, []):
+                if p.get("id"):
+                    ids.setdefault(normalise_name(p["name"]), p["id"])
+        for n in dict.fromkeys(n.strip() for n in names if n and n.strip()):
+            key = normalise_name(n)
+            if key in ids or len(ids) >= MAX_PEOPLE:
+                continue
+            try:
+                hits = self.client.search_entities(n, ["Person"], 5)
+            except CalaError as exc:
+                logger.warning("Person lookup failed for %s: %s", n, exc)
+                continue
+            exact = [h["id"] for h in hits if normalise_name(h["name"]) == key]
+            if len(exact) == 1:
+                ids[key] = exact[0]
+        people = list(dict.fromkeys(ids.values()))[:MAX_PEOPLE]
+        if not people:
+            return
+
+        def load(pid: str) -> dict | None:
+            try:
+                return self.client.retrieve_entity(
+                    pid, {"properties": ["name"], "relationships": PERSON_RELATIONSHIPS}
+                )
+            except CalaError as exc:
+                logger.warning("Could not load person %s: %s", pid, exc)
+                return None
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            records = [r for r in pool.map(load, people) if r]
+        for person in records:
+            self._person_facts(person, company)
+
+    def _person_facts(self, person: dict, company: dict) -> None:
+        who = person.get("name", "This person")
+        out = (person.get("relationships") or {}).get("outgoing", {})
+        own = {company.get("id"), normalise_name(company.get("name", ""))}
+        for rel, items in out.items():
+            for x in items:
+                props = x.get("properties") or {}
+                org = x.get("name", "")
+                # The company-side record already covers this person's roles at the company itself.
+                if rel != "WORKS_AT" and (x.get("id") in own or normalise_name(org) in own):
+                    continue
+                role = f" as {props['role']}" if props.get("role") else ""
+                since = f" since {str(props['valid_since'])[:10]}" if props.get("valid_since") else ""
+                until = f" until {str(props['valid_until'])[:10]}" if props.get("valid_until") else ""
+                text = {
+                    "WORKS_AT": f"{who} is recorded as working, now or in the past, at {org}{role}",
+                    "FOUNDED": f"{who} is recorded as a founder of {org}",
+                    "IS_CEO_OF": f"{who} is recorded as CEO of {org}",
+                    "IS_CTO_OF": f"{who} is recorded as CTO of {org}",
+                    "IS_CSO_OF": f"{who} is recorded as Chief Scientist of {org}",
+                    "INVESTED_IN": f"{who} is recorded as an investor in {org}",
+                    "STUDIED_AT": f"{who} is recorded as having studied at {org}",
+                    "IS_MEMBER_OF": f"{who} is recorded as a member of {org}{role}",
+                }.get(rel)
+                if text:
+                    self.add(f"{text}{since}{until}.", to_sources(props.get("sources")))
 
     def add_competitors(self, company_name: str) -> None:
         """Competitors Cala lists for the company, each with its own sourced description."""
@@ -331,7 +422,13 @@ def _richness(e: dict) -> int:
 
 
 def build_evidence(
-    client: CalaClient, *, company_id: str, names: list[str], website: str = "", include_competitors: bool
+    client: CalaClient,
+    *,
+    company_id: str,
+    names: list[str],
+    website: str = "",
+    people: list[str] | None = None,
+    include_competitors: bool,
 ) -> tuple[str, list[Evidence]]:
     """Returns (company name on record, evidence). Evidence is empty when the company is not in Cala."""
     builder = EvidenceBuilder(client)
@@ -339,6 +436,10 @@ def build_evidence(
     if entity is None:
         return "", []
     builder.add_company_facts(entity)
+    try:
+        builder.add_people(entity, people or [])
+    except CalaError as exc:
+        logger.warning("People lookup failed: %s", exc)
     if include_competitors:
         try:
             builder.add_competitors(entity["name"])

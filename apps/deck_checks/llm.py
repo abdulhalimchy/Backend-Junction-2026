@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import base64
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import anthropic
 from django.conf import settings
@@ -16,8 +16,9 @@ from google.genai import types as genai_types
 from .evidence import Evidence
 
 CATEGORIES = ["funding", "team", "traction", "market", "company"]
-MAX_CLAIMS = 30
-DEFAULT_MODELS = {"gemini": "gemini-2.5-flash", "anthropic": "claude-sonnet-5-5"}
+MAX_CLAIMS = 40
+# gemini-2.5-flash is closed to new API keys; gemini-4-hydrogen matches the market-analysis default.
+DEFAULT_MODELS = {"gemini": "gemini-4-hydrogen", "anthropic": "claude-sonnet-5-5"}
 
 
 class LLMError(Exception):
@@ -53,6 +54,7 @@ def _gemini(system: str, text: str, tool: dict, pdf: bytes | None) -> dict:
                 system_instruction=system,
                 response_mime_type="application/json",
                 response_json_schema=tool["input_schema"],
+                temperature=0,
                 http_options=genai_types.HttpOptions(timeout=180_000),
                 automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(disable=True),
             ),
@@ -88,6 +90,7 @@ def _anthropic(system: str, text: str, tool: dict, pdf: bytes | None) -> dict:
         res = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY, timeout=180.0).messages.create(
             model=_model(),
             max_tokens=8000,
+            temperature=0,
             system=system,
             tools=[tool],
             tool_choice={"type": "tool", "name": tool["name"]},
@@ -121,6 +124,11 @@ EXTRACT_TOOL = {
                 "type": "string",
                 "description": "The company's website domain if the deck shows one, else empty.",
             },
+            "people": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Full names of the people the deck presents as founders, team, advisors or investors.",
+            },
             "claims": {
                 "type": "array",
                 "items": {
@@ -141,7 +149,7 @@ EXTRACT_TOOL = {
                 },
             },
         },
-        "required": ["company_name", "other_names", "website", "claims"],
+        "required": ["company_name", "other_names", "website", "people", "claims"],
     },
 }
 
@@ -153,7 +161,9 @@ EXTRACT_SYSTEM = (
     "Skip vision statements, opinions, product descriptions, business-model descriptions and future plans. "
     "Do not turn comparison grids or positioning charts into one claim per cell; at most extract an explicit "
     "claim such as 'the only' or 'first to market'. Keep one fact per claim and the "
-    f"deck's own numbers and currency. Report at most {MAX_CLAIMS} claims. Read slide images and charts too, "
+    "deck's own numbers and currency. For people, split each fact into its own claim: 'X is a co-founder', "
+    "'X is Chief Scientist' and 'X previously worked at Meta' are three claims, never one. "
+    f"Report at most {MAX_CLAIMS} claims. Read slide images and charts too, "
     "not just text. Never invent claims."
 )
 
@@ -164,6 +174,7 @@ class DeckReading:
     other_names: list[str]
     website: str
     claims: list[dict]
+    people: list[str] = field(default_factory=list)
 
     @property
     def names(self) -> list[str]:
@@ -190,6 +201,7 @@ def extract_claims(pdf_bytes: bytes) -> DeckReading:
         other_names=[str(n).strip() for n in other if str(n).strip()][:5],
         website=str(out.get("website", "")).strip(),
         claims=claims,
+        people=[str(n).strip() for n in (out.get("people") or []) if str(n).strip()][:15],
     )
 
 
@@ -231,6 +243,11 @@ VERIFY_SYSTEM = (
     "or a counter-example such as a competitor for an 'only company' claim). Explain the difference in on_record.\n"
     "- cant_verify: the evidence does not address the claim. That means NOT ON RECORD, never 'false'. Use it "
     "for traction, customers, revenue and market-size claims unless evidence directly covers them.\n"
+    "Silence is not contradiction: evidence that does not mention something (an investor, a customer, a role) is "
+    "cant_verify, not differs.\n"
+    "Past jobs: if the evidence shows the person at the claimed employer, confirm it even when the recorded job "
+    "title is worded differently, and give the recorded title in on_record. Use differs only when the record "
+    "shows a materially more junior role, a different employer, or conflicting dates.\n"
     "Use only the evidence given; never use outside knowledge. Cite the evidence ids you used. Never sum amounts "
     "in different currencies. Grants are not equity: say so when a claim counts one as 'raised'. Return one "
     "verdict per claim."
@@ -244,5 +261,66 @@ def verify_claims(company: str, claims: list[dict], evidence: list[Evidence]) ->
     ev_lines = "\n".join(f"{e.id}: {e.text}" for e in evidence) or "(no evidence on record)"
     text = f"Company: {company or 'unknown'}\n\nClaims:\n{claim_lines}\n\nEvidence from Cala:\n{ev_lines}"
     out = _call_tool(VERIFY_SYSTEM, text, VERIFY_TOOL)
+    verdicts = out.get("verdicts")
+    return verdicts if isinstance(verdicts, list) else []
+
+
+VERIFY_WEB_SYSTEM = (
+    "You check pitch-deck claims against excerpts from web pages that Cala found by searching for each claim. "
+    "Each claim has its own excerpts: judge a claim only by its own excerpts. Pages vary in quality, can be wrong, "
+    "and can be written later than the deck.\n"
+    "- confirmed: excerpts state the same fact explicitly (allow rounding and different wording). Cite every "
+    "excerpt that states it.\n"
+    "- differs: excerpts state something materially different (another amount, date, role or employer). Explain "
+    "the difference in on_record and cite every excerpt that shows it.\n"
+    "- cant_verify: the excerpts do not address the claim, only hint at it, or disagree with each other.\n"
+    "Silence is not contradiction: a list or profile that does not mention something is never grounds for differs. "
+    "differs needs an excerpt that states something incompatible with the claim.\n"
+    "Excerpts that only repeat this pitch deck's own figures (articles or templates about the deck) are not "
+    "independent evidence: ignore them.\n"
+    "For estimates such as market size or growth, confirm only if an excerpt reports the same estimate and says who "
+    "made it; name them in on_record. A claim that someone 'led' something is confirmed only if an excerpt says they "
+    "led it, not merely that they worked on it.\n"
+    "Never use outside knowledge. on_record is one or two plain sentences that name the sources' sites."
+)
+
+
+VERIFY_WEB_TOOL = {
+    **VERIFY_TOOL,
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "verdicts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        **VERIFY_TOOL["input_schema"]["properties"]["verdicts"]["items"]["properties"],
+                        "quote": {
+                            "type": "string",
+                            "description": "For confirmed or differs: one sentence copied word for word from a cited "
+                            "excerpt that on its own states the claim (confirmed) or states something incompatible "
+                            "with it (differs). A list that merely omits something does not qualify. Empty for "
+                            "cant_verify.",
+                        },
+                    },
+                    "required": ["index", "status", "evidence_ids", "quote"],
+                },
+            }
+        },
+        "required": ["verdicts"],
+    },
+}
+
+
+def verify_claims_web(company: str, claims: list[dict], found: dict[int, list[Evidence]]) -> list[dict]:
+    """Second pass for claims the Cala record could not settle, each with its own searched excerpts."""
+    blocks = []
+    for i, ev in found.items():
+        c = claims[i]
+        lines = "\n".join(f"  {e.id} [{e.sources[0]['document'] if e.sources else ''}]: {e.text}" for e in ev)
+        blocks.append(f"[{i}] (slide {c['slide']}, {c['category']}) {c['claim']}\n{lines}")
+    text = f"Company the deck is about: {company or 'unknown'}\n\n" + "\n\n".join(blocks)
+    out = _call_tool(VERIFY_WEB_SYSTEM, text, VERIFY_WEB_TOOL)
     verdicts = out.get("verdicts")
     return verdicts if isinstance(verdicts, list) else []

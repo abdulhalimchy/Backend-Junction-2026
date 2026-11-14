@@ -1,0 +1,43 @@
+{
+  "pdf": "mistral-seed-2023.pdf",
+  "company_name": "Mistral AI",
+  "about": "Mistral AI seed memo, June 2023. Labels reflect what is true and publicly sourced, not only what Cala's record holds.",
+  "items": [
+    {"slide": 1, "all": ["2022"], "none": ["2030"], "accept": ["confirmed", "cant_verify"], "want": "confirmed", "note": "Market estimate (~$10.8B in 2022, Grand View Research). Estimates disagree between analysts."},
+    {"slide": 1, "all": ["110", "2030"], "accept": ["confirmed", "cant_verify"], "want": "confirmed", "note": "Market projection (~$109B by 2030, Grand View Research)."},
+    {"slide": 1, "all": ["35%"], "accept": ["confirmed", "cant_verify"], "want": "confirmed", "note": "Projected CAGR ~35.6% (Grand View Research)."},
+    {"slide": 2, "all": ["us-based"], "accept": ["differs", "cant_verify"], "want": "differs", "note": "Cohere (Canada), Aleph Alpha (Germany) and DeepMind (London) existed in 2023."},
+    {"slide": 2, "all": ["italy"], "accept": ["confirmed", "cant_verify"], "want": "confirmed", "note": "Italy's Garante blocked ChatGPT on 31 March 2023 over data-protection grounds incl. training data."},
+    {"slide": 2, "all": ["europe"], "accept": ["differs", "cant_verify"], "want": "cant_verify", "note": "'No serious European contender' is a judgement; Aleph Alpha and DeepMind London are arguable counter-examples."},
+    {"slide": 2, "all": ["api"], "accept": ["confirmed", "cant_verify"], "want": "cant_verify", "note": "Broad characterisation of competitors; not a single checkable fact."},
+
+    {"slide": 4, "all": ["mensch", "found"], "accept": ["confirmed"], "want": "confirmed"},
+    {"slide": 4, "all": ["mensch", "ceo"], "accept": ["confirmed"], "want": "confirmed"},
+    {"slide": 4, "all": ["mensch", "deepmind"], "none": ["chinchilla", "retro", "flamingo", "author"], "accept": ["confirmed"], "want": "confirmed"},
+    {"slide": 4, "all": ["mensch", "chinchilla"], "accept": ["confirmed", "cant_verify"], "want": "confirmed", "note": "One of three equal-contribution first authors."},
+    {"slide": 4, "all": ["mensch", "retro"], "accept": ["differs", "cant_verify"], "want": "cant_verify", "note": "Co-author; Borgeaud et al. led it. 'Lead author' is overstated."},
+    {"slide": 4, "all": ["mensch", "flamingo"], "accept": ["differs", "cant_verify"], "want": "differs", "note": "Listed 8th; Alayrac, Donahue, Luc and Miech were the leads."},
+
+    {"slide": 4, "all": ["lample", "found"], "accept": ["confirmed"], "want": "confirmed"},
+    {"slide": 4, "all": ["lample", "scien"], "none": ["meta", "former"], "accept": ["confirmed"], "want": "confirmed"},
+    {"slide": 4, "all": ["lample", "meta"], "none": ["llama"], "accept": ["confirmed"], "want": "confirmed"},
+    {"slide": 4, "all": ["lample", "llama"], "accept": ["confirmed", "cant_verify"], "want": "cant_verify", "note": "Sources say he 'helped lead' and was senior author; 'led' is overstated but not contradicted."},
+
+    {"slide": 4, "all": ["lacroix", "found"], "accept": ["confirmed"], "want": "confirmed"},
+    {"slide": 4, "all": ["lacroix", "cto"], "accept": ["confirmed"], "want": "confirmed"},
+    {"slide": 4, "all": ["lacroix", "meta"], "none": ["llama"], "accept": ["confirmed"], "want": "confirmed", "note": "Recorded as research scientist at Meta; title wording differs from the deck."},
+    {"slide": 4, "all": ["lacroix", "llama"], "accept": ["confirmed", "cant_verify"], "want": "cant_verify"},
+
+    {"slide": 4, "all": ["samuelian", "found"], "accept": ["confirmed", "cant_verify"], "want": "confirmed", "note": "Co-founder / early shareholder of Mistral."},
+    {"slide": 4, "all": ["samuelian", "alan"], "accept": ["confirmed"], "want": "confirmed"},
+    {"slide": 4, "all": ["gorintin", "found"], "accept": ["confirmed", "cant_verify"], "want": "confirmed"},
+    {"slide": 4, "all": ["gorintin", "alan"], "accept": ["confirmed", "cant_verify"], "want": "confirmed"},
+    {"slide": 4, "all": ["dric o", "found"], "accept": ["confirmed", "cant_verify"], "want": "confirmed"},
+    {"slide": 4, "all": ["dric o", "secretary"], "accept": ["confirmed", "cant_verify"], "want": "confirmed", "note": "Secretary of State for Digital Affairs 2019-2022; well sourced on the web."},
+
+    {"slide": 4, "all": ["employees"], "accept": ["cant_verify"], "want": "cant_verify", "note": "Internal, forward-looking."},
+    {"slide": 5, "all": ["comput"], "accept": ["cant_verify"], "want": "cant_verify", "note": "Private negotiations."},
+    {"slide": 5, "all": ["content provider"], "accept": ["cant_verify", "confirmed"], "want": "cant_verify", "note": "Partly true (Motier/Xavier Niel, JCDecaux) but not stated by sources; never differs."},
+    {"slide": 7, "all": ["gpt-4"], "accept": ["confirmed", "cant_verify"], "want": "cant_verify", "note": "Altman said more than $100M; 'a few hundred million' is not established."}
+  ]
+}
