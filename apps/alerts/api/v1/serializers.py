@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from apps.alerts.models import Alert
+from apps.alerts.models import Alert, ScanRun
 from apps.core.serializers import SourceSerializer
 
 
@@ -18,6 +18,8 @@ class AlertSerializer(serializers.ModelSerializer):
             "body",
             "reason",
             "href",
+            "entity_type",
+            "cala_id",
             "event",
             "occurred_on",
             "is_read",
@@ -41,3 +43,17 @@ class ScanResultSerializer(serializers.Serializer):
     errors = serializers.DictField(
         child=serializers.CharField(), help_text="Cala id -> error, per failed entity."
     )
+
+
+class ScanRunSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ScanRun
+        fields = ("trigger", "status", "started_at", "finished_at", "entities", "alerts_created", "skipped")
+
+
+class ScheduleSerializer(serializers.Serializer):
+    time = serializers.CharField(help_text="Local time of the nightly scan, HH:MM.")
+    timezone = serializers.CharField()
+    next_run_at = serializers.DateTimeField()
+    last_nightly = ScanRunSerializer(allow_null=True)
+    last_manual = ScanRunSerializer(allow_null=True, help_text='Your last "Check for changes".')

@@ -219,6 +219,15 @@ CALA_API_KEY = env("CALA_API_KEY", default="")
 # Alert scan (apps/alerts/scan.py): funding rounds dated within this many days count as news, including the
 # first time an entity is scanned. Older rounds are history, not alerts.
 ALERT_BACKFILL_DAYS = env.int("ALERT_BACKFILL_DAYS", default=60)
+# Nightly scan of every watched entity (apps/alerts/nightly.py), at this local time.
+ALERT_SCAN_TIME = env("ALERT_SCAN_TIME", default="02:00")
+ALERT_SCAN_TIMEZONE = env("ALERT_SCAN_TIMEZONE", default="Europe/Helsinki")
+# Run the nightly scheduler inside `runserver`. Production runs `manage.py run_alert_scheduler` (one process)
+# or `manage.py scan_alerts --nightly` from cron instead.
+ALERT_SCHEDULER_IN_PROCESS = env.bool("ALERT_SCHEDULER_IN_PROCESS", default=False)
+# Scan an entity as soon as someone starts watching it, in a background thread (ALERT_SCAN_ASYNC).
+ALERT_SCAN_ON_WATCH = env.bool("ALERT_SCAN_ON_WATCH", default=True)
+ALERT_SCAN_ASYNC = env.bool("ALERT_SCAN_ASYNC", default=True)
 
 # LLM for deck checks: reads the deck (claim extraction) and compares claims with Cala evidence (verdicts).
 # Provider "gemini" (default) or "anthropic". Leave DECK_CHECK_LLM_MODEL empty for the provider's default.
@@ -230,6 +239,9 @@ ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 MARKET_LLM_MODEL = env("MARKET_LLM_MODEL", default="gemini-4-hydrogen")
 # Run deck checks in a background thread after the upload returns. Set False to run inline (tests, debugging).
 DECK_CHECK_ASYNC = env.bool("DECK_CHECK_ASYNC", default=True)
+# A check still pending or processing this long after its last update was cut off (the thread dies with the
+# process, e.g. on a restart or autoreload). It is marked failed so it can be retried. Slowest seen: ~7 min.
+DECK_CHECK_STALE_MINUTES = env.int("DECK_CHECK_STALE_MINUTES", default=20)
 # Second pass: search Cala's sourced documents for each claim the structured record cannot settle.
 DECK_CHECK_WEB_SEARCH = env.bool("DECK_CHECK_WEB_SEARCH", default=True)
 

@@ -1,12 +1,31 @@
-from django.db.models import Count, Q
+from django.db.models import Count, IntegerField, OuterRef, Q, Subquery
+from django.db.models.functions import Coalesce
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from apps.alerts import scan
+from apps.alerts.models import Alert, EntitySnapshot
 from apps.watchlist.models import WatchItem
 
 from .serializers import WatchItemSerializer, WatchSummarySerializer
+
+
+def with_alert_state(qs):
+    """Each item's unread alerts (for its owner) and when the alert scan last checked the entity."""
+    unread = (
+        Alert.objects.filter(user=OuterRef("user"), cala_id=OuterRef("cala_id"), read_at__isnull=True)
+        .order_by()
+        .values("cala_id")
+        .annotate(n=Count("id"))
+        .values("n")
+    )
+    checked = EntitySnapshot.objects.filter(cala_id=OuterRef("cala_id")).values("checked_at")[:1]
+    return qs.annotate(
+        unread_alerts=Coalesce(Subquery(unread, output_field=IntegerField()), 0),
+        last_checked_at=Subquery(checked),
+    )
 
 
 @extend_schema_view(
@@ -30,7 +49,7 @@ class WatchItemViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):  # schema generation, no real user
             return WatchItem.objects.none()
-        qs = WatchItem.objects.for_user(self.request.user)
+        qs = with_alert_state(WatchItem.objects.for_user(self.request.user))
         if self.action == "list":
             params = self.request.query_params
             if entity_type := params.get("type"):
@@ -53,6 +72,9 @@ class WatchItemViewSet(viewsets.ModelViewSet):
             cala_id=data["cala_id"],
             defaults={k: v for k, v in data.items() if k in ("name", "tag", "note")},
         )
+        if created:
+            scan.scan_new_watch(item)
+        item = with_alert_state(WatchItem.objects.filter(pk=item.pk)).get()
         return Response(
             self.get_serializer(item).data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
         )

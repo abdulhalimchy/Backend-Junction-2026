@@ -33,3 +33,14 @@ class EventAttendanceSerializer(serializers.ModelSerializer):
     class Meta:
         model = EventAttendance
         fields = ("id", "entity_type", "cala_entity_id", "name", "joined_on", "sources")
+
+
+class SideEventRSVPCreateSerializer(serializers.Serializer):
+    side_event_id = serializers.SlugField(max_length=120)
+
+
+class SideEventRSVPSummarySerializer(serializers.Serializer):
+    """Your own RSVPs plus anonymous head counts per side event (no names)."""
+
+    mine = serializers.ListField(child=serializers.CharField())
+    counts = serializers.DictField(child=serializers.IntegerField())

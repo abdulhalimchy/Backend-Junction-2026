@@ -233,3 +233,74 @@ def test_deleting_a_startup_deletes_its_decks(
     import os
 
     assert not os.path.exists(path)
+
+
+SEARCH_URL = reverse("v1:startups:startup-search")
+DISCORD = "d7b96d4a-0e4e-4e58-97c2-b454ca085a99"
+ETF = "669aee5a-a41c-4ad6-8d16-39dea5b64810"
+
+
+class FakeCala:
+    """Two Cala companies named like "Discord": the company (website on record) and an ETF (none)."""
+
+    ENTITIES = {
+        ETF: {
+            "id": ETF,
+            "name": "ProShares Ultra Discord",
+            "properties": {"description": {"value": "An ETF."}},
+        },
+        DISCORD: {
+            "id": DISCORD,
+            "name": "Discord",
+            "properties": {
+                "description": {"value": "A communication platform.", "sources": [{"name": "Crunchbase"}]},
+                "website": {"value": "https://discord.com/"},
+                "founding_date": {"value": "2015-05-13", "sources": [{"name": "Crunchbase"}]},
+            },
+        },
+    }
+
+    def search_entities(self, name, entity_types=None, limit=8):
+        return [{"id": ETF, "name": "ProShares Ultra Discord"}, {"id": DISCORD, "name": "Discord"}]
+
+    def retrieve_entity(self, entity_id, query=None):
+        return self.ENTITIES[entity_id]
+
+
+@pytest.fixture
+def cala(monkeypatch, settings):
+    settings.CALA_API_KEY = "test"
+    monkeypatch.setattr(enrichment, "CalaClient", FakeCala)
+    monkeypatch.setattr("apps.startups.enrichment.is_configured", lambda: True)
+
+
+def test_search_by_name_puts_the_company_before_namesakes(auth_client, cala):
+    res = auth_client.get(SEARCH_URL, {"q": "Discord"})
+    assert res.status_code == 200, res.json()
+    first, second = res.json()["results"]
+    assert (first["id"], first["domain"], first["founded"]) == (DISCORD, "discord.com", "2015")
+    assert (second["name"], second["domain"]) == ("ProShares Ultra Discord", "")
+
+
+def test_search_needs_a_query(auth_client, cala):
+    assert auth_client.get(SEARCH_URL, {"q": "d"}).status_code == 400
+
+
+def test_lookup_by_picked_cala_company_uses_its_website(
+    auth_client, cala, monkeypatch, django_capture_on_commit_callbacks
+):
+    read = []
+    monkeypatch.setattr(enrichment, "read_website", lambda d: read.append(d))
+    with django_capture_on_commit_callbacks(execute=True):
+        res = auth_client.post(LOOKUP_URL, {"cala_id": DISCORD}, format="json")
+    assert res.status_code == 201, res.json()
+    draft = auth_client.get(detail_url(res.json()["id"])).json()
+    assert read == ["discord.com"]  # the website on record is read, even with no domain typed
+    assert draft["domain"] == "discord.com"
+    assert draft["cala_company_id"] == DISCORD
+    assert draft["suggestions"]["name"] == {"value": "Discord", "origin": "cala", "sources": []}
+    assert draft["suggestions"]["founded"]["origin"] == "cala"
+
+
+def test_lookup_needs_a_domain_or_a_company(auth_client):
+    assert auth_client.post(LOOKUP_URL, {}, format="json").status_code == 400
