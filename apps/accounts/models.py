@@ -63,8 +63,6 @@ class Profile(BaseModel):
 
     # Privacy preferences
     show_in_event_directory = models.BooleanField(default=True)
-    show_card_in_search = models.BooleanField(default=True)
-    share_met_list = models.BooleanField(default=False)
     allow_alerts_email = models.BooleanField(default=True)
 
     class Meta(BaseModel.Meta):
