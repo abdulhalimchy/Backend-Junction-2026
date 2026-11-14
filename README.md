@@ -46,7 +46,6 @@ apps/
     tests/
   events/             event spaces (Slush 2026) and the companies/investors attending
   alerts/             per-user notifications, with read/unread state
-  networking/         the user's private "met" list
   deck_checks/        PDF pitch-deck uploads and per-claim verification results
   watchlist/          companies, investors and people a user watches (tags, notes)
 requirements/         base.txt, development.txt, production.txt
@@ -100,15 +99,13 @@ DRF `NamespaceVersioning` reads the namespace, so `request.version == "v1"`. URL
 | GET | `/api/v1/alerts/unread-count/` | bearer | `{"unread": n}` for the badge |
 | GET | `/api/v1/alerts/schedule/` | bearer | Nightly scan time and timezone, next run, last nightly run, your last manual check |
 | POST | `/api/v1/alerts/scan/` | bearer | Check the companies and investors you watch for changes now; returns `{entities, alerts_created, skipped, errors}` (throttled, `THROTTLE_ALERT_SCAN`, 20/hour) |
-| GET, POST | `/api/v1/networking/met/` | bearer | List (`?event=`, `?person=`, `?q=`) or add people you met |
-| GET, PATCH, DELETE | `/api/v1/networking/met/{id}/` | bearer | One met entry |
 | GET, POST | `/api/v1/deck-checks/` | bearer | List your deck checks, or upload a PDF (`multipart/form-data`) |
 | GET, DELETE | `/api/v1/deck-checks/{id}/` | bearer | One deck check with its claims; delete also removes the file |
 | GET, POST | `/api/v1/watchlist/` | bearer | List (`?type=`, `?tag=` or `none`, `?cala_id=`, `?q=`) or watch an entity; watching it again returns the existing item (200) |
 | GET, PATCH, DELETE | `/api/v1/watchlist/{id}/` | bearer | One watch item; PATCH changes `name`, `tag`, `note` only |
 | GET | `/api/v1/watchlist/summary/` | bearer | `{"total", "by_type", "by_tag"}` for the "Watching N" panel |
 
-Users only ever see their own alerts, met entries, deck checks and watch items; anyone else's return 404. Events are read-only over the API and managed in the admin for now (later by a Cala sync job). Alerts are created by the backend, never by clients.
+Users only ever see their own alerts, deck checks and watch items; anyone else's return 404. Events are read-only over the API and managed in the admin for now (later by a Cala sync job). Alerts are created by the backend, never by clients.
 
 **Alert scan** (`apps/alerts/scan.py`). Alerts are created by the backend, from what Cala has on record for every company and investor on a watch list (plus each founder's own `cala_company_id`). One lookup per entity, however many people watch it; the facts are compared with the last `EntitySnapshot`:
 

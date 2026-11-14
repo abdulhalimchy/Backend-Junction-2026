@@ -46,7 +46,6 @@ LOCAL_APPS = [
     "apps.accounts",
     "apps.events",
     "apps.alerts",
-    "apps.networking",
     "apps.deck_checks",
     "apps.markets",
     "apps.watchlist",
