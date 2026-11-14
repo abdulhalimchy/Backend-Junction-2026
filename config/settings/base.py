@@ -49,6 +49,7 @@ LOCAL_APPS = [
     "apps.networking",
     "apps.deck_checks",
     "apps.markets",
+    "apps.startups",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS

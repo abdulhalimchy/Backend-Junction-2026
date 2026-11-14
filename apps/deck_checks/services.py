@@ -11,9 +11,12 @@ from .models import DeckCheck
 
 
 @transaction.atomic
-def create_deck_check(*, user, file, cala_company_id: str = "", company_name: str = "") -> DeckCheck:
+def create_deck_check(
+    *, user, file, cala_company_id: str = "", company_name: str = "", startup=None
+) -> DeckCheck:
     deck_check = DeckCheck.objects.create(
         user=user,
+        startup=startup,
         file=file,
         file_name=file.name[:255],
         file_size=file.size,
