@@ -17,7 +17,8 @@ from .evidence import Evidence
 
 CATEGORIES = ["funding", "team", "traction", "market", "company"]
 MAX_CLAIMS = 30
-DEFAULT_MODELS = {"gemini": "gemini-2.5-flash", "anthropic": "claude-sonnet-5-5"}
+# gemini-2.5-flash is closed to new API keys; gemini-4-hydrogen matches the market-analysis default.
+DEFAULT_MODELS = {"gemini": "gemini-4-hydrogen", "anthropic": "claude-sonnet-5-5"}
 
 
 class LLMError(Exception):
