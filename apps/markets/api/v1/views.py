@@ -1,4 +1,5 @@
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.exceptions import APIException
@@ -9,7 +10,7 @@ from apps.core.cala import is_configured
 from apps.markets import analysis, guard, summary
 from apps.markets.llm import LLMError
 from apps.markets.models import MarketAnalysis
-from apps.markets.report import normalise_sector
+from apps.markets.planner import complete_plan
 
 from .serializers import (
     GuardRequestSerializer,
@@ -76,9 +77,10 @@ class CalaUnavailable(APIException):
 class MarketAnalysisListView(APIView):
     """
     GET: the user's market analysis history, most recently opened first.
-    POST {text, region, force}: open the analysis of a market. The typed text is checked first (is it a
-    market? its standard name) unless force is set. A market already in the history is returned as stored,
-    spending no Cala credit; a new one starts in the background (poll the detail while status is "loading").
+    POST {text, force}: open the analysis of free text. The LLM reads it first (is it a market? which market
+    and place? which Cala requests?); text that is not a market gets suggestions unless force is set.
+    A market already in the history is returned as stored, spending no Cala credit; a new one starts in the
+    background (poll the detail while status is "loading", POST .../cancel/ to stop it).
     DELETE: clear the whole history.
     """
 
@@ -90,18 +92,16 @@ class MarketAnalysisListView(APIView):
     def post(self, request):
         s = OpenAnalysisSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        text, region = s.validated_data["text"], s.validated_data["region"]
-        typed = normalise_sector(text)
-        if s.validated_data["force"]:
-            verdict = {"kind": "market", "reason": "", "suggestions": [], "canonical": ""}
-        else:
-            verdict = analysis.check_text(request.user, text)
-        if verdict["kind"] != "market":
-            return Response({"verdict": verdict, "analysis": None})
+        text = " ".join(s.validated_data["text"].split())
+        verdict = analysis.plan_text(request.user, text)
+        plan = verdict.get("plan")
+        if verdict["kind"] != "market" or not plan:
+            if not s.validated_data["force"]:
+                return Response({"verdict": _public(verdict), "analysis": None})
+            plan = complete_plan({}, text, timezone.now().year)
         _need_cala()
-        sector = verdict.get("canonical") or typed
-        result = analysis.open_analysis(request.user, sector, region, typed=typed)
-        return Response({"verdict": verdict, "analysis": MarketAnalysisSerializer(result).data})
+        result = analysis.open_analysis(request.user, plan, typed=text)
+        return Response({"verdict": _public(verdict), "analysis": MarketAnalysisSerializer(result).data})
 
     def delete(self, request):
         deleted, _ = _analyses(request).delete()
@@ -119,6 +119,32 @@ class MarketAnalysisDetailView(APIView):
     def delete(self, request, pk):
         get_object_or_404(_analyses(request), pk=pk).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _public(verdict: dict) -> dict:
+    """The verdict as the frontend shows it (canonical: the market name the analysis is stored under)."""
+    plan = verdict.get("plan") or {}
+    return {
+        "kind": verdict["kind"],
+        "reason": verdict.get("reason", ""),
+        "suggestions": verdict.get("suggestions", []),
+        "canonical": plan.get("market", ""),
+    }
+
+
+@extend_schema(tags=["markets"], request=None, responses={200: dict})
+class MarketAnalysisCancelView(APIView):
+    """
+    Stop a running analysis. It is rolled back to the last finished result (what was stored before this run);
+    a first run has nothing to go back to and is removed from the history. Cala requests already sent finish
+    in the background and their answers are discarded.
+    """
+
+    def post(self, request, pk):
+        result = analysis.cancel(get_object_or_404(_analyses(request), pk=pk))
+        return Response(
+            {"deleted": result is None, "analysis": MarketAnalysisSerializer(result).data if result else None}
+        )
 
 
 @extend_schema(tags=["markets"], request=None, responses={202: MarketAnalysisSerializer})

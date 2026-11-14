@@ -146,3 +146,46 @@ def test_cagr_dropped_when_fact_does_not_state_it():
     }
     out = summary.check(raw, FACTS)
     assert out["sizes"][0]["cagr"] is None
+
+
+def test_deals_are_checked_against_their_fact():
+    raw = {
+        "headline": None,
+        "bullets": [],
+        "insights": [],
+        "sizes": [],
+        "deals": [
+            {
+                "company": "Acme",
+                "type": "funding",
+                "stage": "Series A",
+                "amount": 12,
+                "scale": "million",
+                "currency": "EUR",
+                "date": "2025-03",
+                "counterparty": "unknown",
+                "quote": "Acme raised EUR 12 million",
+                "factId": "D1",
+            },
+            {"company": "Ghost", "type": "ipo", "date": "2025", "quote": "Ghost went public", "factId": "D1"},
+            {
+                "company": "Acme",
+                "type": "funding",
+                "amount": 99,
+                "scale": "million",
+                "currency": "EUR",
+                "date": "March 2025",
+                "quote": "Acme raised EUR 12 million in a Series A",
+                "factId": "D1",
+            },
+        ],
+    }
+    out = summary.check(raw, FACTS)
+    assert len(out["deals"]) == 2
+    first = next(d for d in out["deals"] if d["stage"] == "Series A")
+    assert first["value"] == {"amount": 12_000_000, "currency": "EUR"}
+    assert first["counterparty"] == "" and first["date"] == "2025-03"
+    # An amount the quote does not state is blanked, a free-form date is dropped; the deal stays.
+    other = next(d for d in out["deals"] if d is not first)
+    assert other["value"] is None and other["date"] == ""
+    assert any(d["what"].startswith("Deal: Ghost") for d in out["dropped"])

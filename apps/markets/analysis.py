@@ -2,10 +2,12 @@
 """
 Runs a market report and keeps it as the user's history (MarketAnalysis).
 
-A run asks Cala its four questions in parallel and stores each section as soon as it arrives, so the page can
+The typed free text is first turned into a plan by the LLM (planner.py): the market, the place and the four
+Cala requests. A run asks Cala those four in parallel and stores each section as soon as it arrives, so the page can
 show progress. Then the executive summary is written by the LLM from the numbered Cala facts (summary.py) and
 stored too. Opening a report from history reads the stored result: no Cala credit is spent. Refresh re-runs
-it and overwrites the stored sections, recording what changed.
+it and overwrites the stored sections, recording what changed. Stop (cancel) rolls a run back to the result
+stored before it.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import hashlib
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django import db
 from django.conf import settings
@@ -23,7 +25,7 @@ from django.utils import timezone
 
 from apps.core.cala import CalaClient, CalaError
 
-from . import guard, report, summary
+from . import planner, report, summary
 from .llm import LLMError
 from .models import MarketAnalysis
 
@@ -46,7 +48,7 @@ PRESET_MARKETS = [
 ]
 
 
-# -- guard ---------------------------------------------------------------------------
+# -- planning ---------------------------------------------------------------------------
 
 
 def known_markets(user) -> list[str]:
@@ -54,32 +56,57 @@ def known_markets(user) -> list[str]:
     return list(dict.fromkeys([*PRESET_MARKETS, *names]))[-120:]
 
 
-def check_text(user, text: str) -> dict:
-    """Guard verdict for typed text, cached for a day. If the LLM is unavailable the search goes ahead."""
-    key = "market-guard:v1:" + hashlib.sha256(report.normalise_sector(text).encode()).hexdigest()[:32]
+def plan_text(user, text: str) -> dict:
+    """
+    {kind, reason, suggestions, plan} for free text typed into the search box, cached for a day. If the LLM is
+    unavailable the search still goes ahead, with the text as the market and no place.
+    """
+    year = timezone.now().year
+    key = f"market-plan:v1:{year}:" + hashlib.sha256(report.normalise_sector(text).encode()).hexdigest()[:32]
     if hit := cache.get(key):
         return hit
     try:
-        verdict = guard.check_market_text(text, known_markets(user))
+        verdict = planner.plan_market(text, known_markets(user), year)
     except LLMError as exc:
-        logger.warning("Market guard skipped: %s", exc)
-        return {"kind": "market", "reason": "", "suggestions": [], "canonical": ""}
+        logger.warning("Market planner skipped: %s", exc)
+        return {
+            "kind": "market",
+            "reason": "",
+            "suggestions": [],
+            "plan": planner.complete_plan({}, text, year),
+        }
     verdict.pop("tokens", None)
     cache.set(key, verdict, 24 * 3600)
     return verdict
 
 
+def legacy_plan(result: MarketAnalysis) -> dict:
+    """Plan for analyses stored before free-text search, when the region was one of a fixed list."""
+    r = report.REGIONS.get(result.region)
+    place = (r or {}).get("label") or result.region or "Worldwide"
+    countries = (r or {}).get("countries") or []
+    return planner.complete_plan(
+        {"market": result.sector, "place": place if countries else "Worldwide", "countries": countries},
+        result.sector,
+        result.year or timezone.now().year,
+    )
+
+
 # -- running ---------------------------------------------------------------------------
 
 
-def open_analysis(user, sector: str, region: str, typed: str = "", refresh: bool = False) -> MarketAnalysis:
-    """The stored analysis for this market, started if it never ran (or failed), or re-run on refresh."""
-    year = timezone.now().year
+def open_analysis(user, plan: dict, typed: str = "", refresh: bool = False) -> MarketAnalysis:
+    """The stored analysis for this market and place, started if it never ran (or failed), or re-run on refresh."""
     result, created = MarketAnalysis.objects.get_or_create(
         user=user,
-        sector=sector,
-        region=region,
-        defaults={"year": year, "typed": typed if typed != sector else ""},
+        sector=plan["market"],
+        region=plan["place"].lower(),
+        defaults={
+            "year": timezone.now().year,
+            "typed": typed[:300],
+            "title": plan["title"],
+            "plan": plan,
+        },
     )
     if created or refresh or result.status == MarketAnalysis.Status.FAILED or not result.data:
         start(result)
@@ -92,32 +119,75 @@ def start(result: MarketAnalysis) -> MarketAnalysis:
     running = result.status == MarketAnalysis.Status.LOADING and result.started_at
     if running and timezone.now() - result.started_at < STALE_RUN and result.runs:
         return result
+    if not result.plan:
+        result.plan = legacy_plan(result)
+    # What Stop restores: the last finished result (empty for a first run, which Stop then deletes).
+    if result.status != MarketAnalysis.Status.LOADING:
+        result.backup = {
+            "data": result.data,
+            "changes": result.changes,
+            "status": result.status,
+            "error": result.error,
+            "finished_at": result.finished_at.isoformat() if result.finished_at else None,
+            "year": result.year,
+        }
     result.status = MarketAnalysis.Status.LOADING
     result.error = ""
     result.year = timezone.now().year
     result.started_at = timezone.now()
     result.runs += 1
-    result.save(update_fields=["status", "error", "year", "started_at", "runs", "updated_at"])
+    result.save(
+        update_fields=["status", "error", "year", "started_at", "runs", "plan", "backup", "updated_at"]
+    )
     if settings.DECK_CHECK_ASYNC:
         # Requests run in a transaction (ATOMIC_REQUESTS): start the run once the row is committed, so the
         # thread sees it and does not wait on the request's write lock.
+        run_no = result.runs
         db.transaction.on_commit(
             lambda: threading.Thread(
-                target=_run_in_thread, args=(result.pk,), daemon=True, name=f"market-{result.pk}"
+                target=_run_in_thread, args=(result.pk, run_no), daemon=True, name=f"market-{result.pk}"
             ).start()
         )
     else:
-        run(result.pk)
+        run(result.pk, result.runs)
         result.refresh_from_db()
     return result
 
 
-def _run_in_thread(analysis_id) -> None:
+def cancel(result: MarketAnalysis) -> MarketAnalysis | None:
+    """
+    Stops a running analysis and rolls it back to the last finished result. A first run has nothing to go back
+    to, so it is deleted. Returns the restored analysis, or None when it was deleted. The run's thread notices
+    on its next write (the row is no longer loading for its run number) and discards what it fetched.
+    """
+    if result.status != MarketAnalysis.Status.LOADING:
+        return result
+    b = result.backup or {}
+    if not b.get("data"):
+        result.delete()
+        return None
+    finished = b.get("finished_at")
+    result.data = b["data"]
+    result.changes = b.get("changes") or []
+    result.status = b.get("status") or MarketAnalysis.Status.READY
+    result.error = b.get("error") or ""
+    result.finished_at = datetime.fromisoformat(finished) if finished else None
+    result.year = b.get("year") or result.year
+    result.backup = {}
+    # runs is not decremented: the stopped thread's writes match on (runs, status=loading), so they no longer
+    # apply, and the next run gets a new number.
+    result.save()
+    return result
+
+
+def _run_in_thread(analysis_id, run_no: int) -> None:
     try:
-        run(analysis_id)
+        run(analysis_id, run_no)
     except Exception:  # noqa: BLE001 - never leave a run stuck in "loading"
         logger.exception("Market analysis %s crashed", analysis_id)
-        MarketAnalysis.objects.filter(pk=analysis_id).update(
+        MarketAnalysis.objects.filter(
+            pk=analysis_id, status=MarketAnalysis.Status.LOADING, runs=run_no
+        ).update(
             status=MarketAnalysis.Status.FAILED,
             error="The analysis stopped unexpectedly.",
             updated_at=timezone.now(),
@@ -126,27 +196,45 @@ def _run_in_thread(analysis_id) -> None:
         db.connection.close()
 
 
-def run(analysis_id) -> None:
+class RunStoppedError(Exception):
+    pass
+
+
+def run(analysis_id, run_no: int | None = None) -> None:
     result = MarketAnalysis.objects.filter(pk=analysis_id).first()
     if not result:
         return
-    previous = dict(result.data or {})
+    run_no = run_no or result.runs
+    plan = result.plan or legacy_plan(result)
+    previous = dict((result.backup or {}).get("data") or result.data or {})
     data = {
         **previous,
         "errors": {},
-        "query": {"sector": result.sector, "region": result.region, "year": result.year},
+        "query": {
+            "sector": result.sector,
+            "region": plan["place"],
+            "year": result.year,
+            "title": plan["title"],
+        },
+        "plan": plan,
     }
     client = CalaClient()
 
     def save(**extra) -> None:
-        # Updates only if the analysis still exists: the user may clear their history mid-run.
-        MarketAnalysis.objects.filter(pk=analysis_id).update(data=data, updated_at=timezone.now(), **extra)
+        # Writes only while this run is still the live one: the user may have stopped it (rolled back), started
+        # a new run, or cleared their history meanwhile. Then everything fetched is discarded.
+        live = MarketAnalysis.objects.filter(
+            pk=analysis_id, runs=run_no, status=MarketAnalysis.Status.LOADING
+        )
+        if not live.update(data=data, updated_at=timezone.now(), **extra):
+            raise RunStoppedError
 
     def ask(name: str) -> dict:
         # Worker threads only call Cala; every database write happens on this run's own thread.
-        return {**SECTIONS[name](client, result.sector, result.region, result.year), "fetched_at": _now_ms()}
+        return {**SECTIONS[name](client, plan), "fetched_at": _now_ms()}
 
-    with ThreadPoolExecutor(max_workers=len(SECTIONS)) as ex:
+    ex = ThreadPoolExecutor(max_workers=len(SECTIONS))
+    try:
         pending = {ex.submit(ask, name): name for name in SECTIONS}
         for done in as_completed(pending):
             name = pending[done]
@@ -158,31 +246,37 @@ def run(analysis_id) -> None:
                 data.pop(name, None)
             save()  # each section is stored as soon as it arrives, so the page can show progress
 
-    facts = summary_facts(data)
-    if not facts:
-        data.pop("summary", None)
-        data["errors"]["summary"] = {
-            "message": "Cala returned no facts for this market, so there is nothing to summarise.",
-            "kind": "upstream",
-        }
-    else:
-        try:
-            data["summary"] = {
-                **summary.summarise(result.sector, result.region, result.year, facts),
-                "fetched_at": _now_ms(),
-            }
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Market summary failed for %s", analysis_id, exc_info=True)
+        facts = summary_facts(data)
+        if not facts:
             data.pop("summary", None)
-            data["errors"]["summary"] = _error(exc)
+            data["errors"]["summary"] = {
+                "message": "No verified facts were found for this market, so there is nothing to summarise.",
+                "kind": "upstream",
+            }
+        else:
+            try:
+                data["summary"] = {
+                    **summary.summarise(result.sector, plan["place"], result.year, facts),
+                    "fetched_at": _now_ms(),
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Market summary failed for %s", analysis_id, exc_info=True)
+                data.pop("summary", None)
+                data["errors"]["summary"] = _error(exc)
 
-    failed = all(k in data["errors"] for k in SECTIONS)
-    save(
-        status=MarketAnalysis.Status.FAILED if failed else MarketAnalysis.Status.READY,
-        error=data["errors"].get("size", {}).get("message", "") if failed else "",
-        changes=diff(previous, data) if previous.get("query") else [],
-        finished_at=timezone.now(),
-    )
+        failed = all(k in data["errors"] for k in SECTIONS)
+        save(
+            status=MarketAnalysis.Status.FAILED if failed else MarketAnalysis.Status.READY,
+            error=data["errors"].get("size", {}).get("message", "") if failed else "",
+            changes=diff(previous, data) if previous.get("query") else [],
+            finished_at=timezone.now(),
+            backup={},
+        )
+    except RunStoppedError:
+        logger.info("Market analysis %s run %s was stopped; its results are discarded", analysis_id, run_no)
+    finally:
+        # Requests still waiting are dropped; ones already sent finish in the background and are ignored.
+        ex.shutdown(wait=False, cancel_futures=True)
 
 
 def _now_ms() -> int:
@@ -256,7 +350,7 @@ def diff(old: dict, new: dict) -> list[str]:
         before = len((old.get(name) or {}).get("evidence", []))
         after = len(new[name].get("evidence", []))
         if (old.get(name) or {}).get("summary") != new[name].get("summary"):
-            out.append(f"{label}: Cala's answer changed ({before} → {after} facts).")
+            out.append(f"{label}: the sourced answer changed ({before} → {after} facts).")
     old_head = ((old.get("summary") or {}).get("headline") or {}).get("text")
     new_head = ((new.get("summary") or {}).get("headline") or {}).get("text")
     if "summary" in new and old_head != new_head:

@@ -87,13 +87,6 @@ def normalise_sector(text: str) -> str:
     return " ".join(text.split()).lower()
 
 
-def _where(region: str) -> str:
-    countries = region_of(region)["countries"]
-    if not countries:
-        return " worldwide"
-    return " in Europe" if len(countries) > 6 else f" in {', '.join(countries)}"
-
-
 def _map(fn, items, workers: int = CONCURRENCY) -> list:
     if not items:
         return []
@@ -133,37 +126,34 @@ def _ask(client: CalaClient, question: str) -> dict:
     }
 
 
-def market_size(client: CalaClient, sector: str, region: str, year: int) -> dict:
-    return _ask(
-        client,
-        f"What is the market size and expected growth rate (CAGR) of the {sector} market{_where(region)}? "
-        "Give figures from market research reports with their year, currency and forecast period.",
-    )
+def market_size(client: CalaClient, plan: dict) -> dict:
+    return _ask(client, plan["size_question"])
 
 
-def market_trends(client: CalaClient, sector: str, region: str, year: int) -> dict:
-    return _ask(
-        client,
-        f"What are the key trends, growth drivers and challenges in the {sector} market{_where(region)} in {year - 1} and {year}?",
-    )
+def market_trends(client: CalaClient, plan: dict) -> dict:
+    return _ask(client, plan["trends_question"])
 
 
-def market_deals(client: CalaClient, sector: str, region: str, year: int) -> dict:
-    return _ask(
-        client,
-        f"What notable funding rounds, acquisitions, mergers, IPOs and exits happened in the {sector} market{_where(region)} "
-        f"in {year - 1} and {year}? For funding rounds give the company, amount with currency, round type, date and lead investors. "
-        "For deals give the buyer, the target, the value if disclosed, and the date.",
-    )
+def market_deals(client: CalaClient, plan: dict) -> dict:
+    return _ask(client, plan["deals_question"])
 
 
 # -- leading players --------------------------------------------------------------
 
 
-def market_players(client: CalaClient, sector: str, region: str, year: int) -> dict:
-    definition = f"Leading and largest companies in the {sector} market{_where(region)}, including public companies.return(name, country)"
+def market_players(client: CalaClient, plan: dict) -> dict:
+    """
+    Leading companies from Cala's structured filter (knowledge_query, dot notation, ordered by funding). If that
+    finds no company records, the broader natural-language definition is tried once.
+    """
+    from .planner import fallback_players_definition
+
+    definition = plan["players_query"]
     res = client.knowledge_query(definition)
-    companies, unresolved = load_candidates(client, res, region)
+    companies, unresolved = load_candidates(client, res, plan["countries"])
+    if not companies:
+        definition = fallback_players_definition(plan)
+        companies, unresolved = load_candidates(client, client.knowledge_query(definition), plan["countries"])
     return {"definition": definition, "companies": companies, "unresolved": unresolved}
 
 
@@ -174,7 +164,7 @@ def _row_name(row: dict) -> str:
     return next((v.strip() for v in row.values() if isinstance(v, str) and v.strip()), "")
 
 
-def load_candidates(client: CalaClient, res: dict, region: str) -> tuple[list[dict], int]:
+def load_candidates(client: CalaClient, res: dict, countries: list[str]) -> tuple[list[dict], int]:
     rows = list(dict.fromkeys(n for n in map(_row_name, res.get("results") or []) if n))
     linked = [e for e in res.get("entities") or [] if e.get("entity_type") in COMPANY_TYPES]
 
@@ -208,7 +198,7 @@ def load_candidates(client: CalaClient, res: dict, region: str) -> tuple[list[di
     enrich_investors(client, [c for c, _ in fetched])
 
     # Cala's query does not strictly enforce location: drop companies on record outside the region.
-    allowed = set(region_of(region)["countries"])
+    allowed = set(countries)
     companies = [
         c for c, countries in fetched if not allowed or not countries or any(x in allowed for x in countries)
     ]
@@ -286,6 +276,8 @@ def to_market_company(client: CalaClient, e: dict) -> dict:
         "description": sourced(e, "description"),
         "hq": sourced(e, "headquarters_address"),
         "founded": fuzzy_date(e, "founding_date"),
+        # The company's reported total (all instruments), used when its rounds carry no amounts.
+        "totalFunding": sourced_money(e, "total_funding", "total_funding_units"),
         "rounds": rounds,
         "investors": [
             {
@@ -383,6 +375,15 @@ def sourced(e: dict, key: str) -> dict | None:
     if not p:
         return None
     return {"value": p["value"], "sources": to_sources(p.get("sources"))}
+
+
+def sourced_money(e: dict, value_key: str, units_key: str) -> dict | None:
+    v, u = _prop(e, value_key), _prop(e, units_key)
+    if not v or not u or not isinstance(v.get("value"), int | float) or not isinstance(u.get("value"), str):
+        return None
+    if v["value"] <= 0:
+        return None
+    return {"value": {"amount": v["value"], "currency": u["value"]}, "sources": to_sources(v.get("sources"))}
 
 
 PRECISIONS = ["year", "month", "day"]

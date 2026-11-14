@@ -41,14 +41,13 @@ class SummaryRequestSerializer(serializers.Serializer):
     facts = FactSerializer(many=True, allow_empty=False, max_length=MAX_FACTS)
 
 
-REGION_KEYS = ["anywhere", "europe", "nordics", "finland", "baltics", "dach", "benelux", "uki", "us"]
-
-
 class OpenAnalysisSerializer(serializers.Serializer):
-    """Open (or start) the analysis of a typed market. force skips the market-text guard."""
+    """
+    Open (or start) the analysis of free text: any wording, with or without a place. The LLM turns it into the
+    Cala requests (planner.py). force runs it even when the text does not read as a market.
+    """
 
-    text = serializers.CharField(max_length=120, trim_whitespace=True)
-    region = serializers.ChoiceField(choices=REGION_KEYS, default="europe")
+    text = serializers.CharField(max_length=300, trim_whitespace=True)
     force = serializers.BooleanField(default=False)
 
 
@@ -59,6 +58,8 @@ class MarketAnalysisListSerializer(serializers.Serializer):
     sector = serializers.CharField()
     typed = serializers.CharField()
     region = serializers.CharField()
+    place = serializers.SerializerMethodField()
+    title = serializers.SerializerMethodField()
     year = serializers.IntegerField()
     status = serializers.CharField()
     runs = serializers.IntegerField()
@@ -68,6 +69,12 @@ class MarketAnalysisListSerializer(serializers.Serializer):
     created_at = serializers.DateTimeField()
     updated_at = serializers.DateTimeField()
     finished_at = serializers.DateTimeField(allow_null=True)
+
+    def get_place(self, obj) -> str:
+        return (obj.plan or {}).get("place") or obj.region
+
+    def get_title(self, obj) -> str:
+        return obj.title or (obj.plan or {}).get("title") or obj.sector
 
     def get_headline(self, obj) -> str:
         return (((obj.data or {}).get("summary") or {}).get("headline") or {}).get("text") or ""
@@ -79,4 +86,9 @@ class MarketAnalysisListSerializer(serializers.Serializer):
 class MarketAnalysisSerializer(MarketAnalysisListSerializer):
     data = serializers.JSONField()
     changes = serializers.JSONField()
+    plan = serializers.JSONField()
+    can_stop = serializers.SerializerMethodField()
     started_at = serializers.DateTimeField(allow_null=True)
+
+    def get_can_stop(self, obj) -> bool:
+        return obj.status == "loading"

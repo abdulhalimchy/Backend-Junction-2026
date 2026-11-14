@@ -9,5 +9,6 @@ urlpatterns = [
     path("summary/", views.MarketSummaryView.as_view(), name="summary"),
     path("analyses/", views.MarketAnalysisListView.as_view(), name="analyses"),
     path("analyses/<uuid:pk>/", views.MarketAnalysisDetailView.as_view(), name="analysis"),
+    path("analyses/<uuid:pk>/cancel/", views.MarketAnalysisCancelView.as_view(), name="analysis-cancel"),
     path("analyses/<uuid:pk>/refresh/", views.MarketAnalysisRefreshView.as_view(), name="analysis-refresh"),
 ]

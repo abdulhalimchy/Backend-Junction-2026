@@ -2,7 +2,7 @@ import pytest
 from django.core.cache import cache
 from django.urls import reverse
 
-from apps.markets import analysis
+from apps.markets import analysis, planner
 from apps.markets.models import MarketAnalysis
 
 pytestmark = pytest.mark.django_db
@@ -18,8 +18,8 @@ SRC = {
 
 
 def section(text):
-    return lambda client, sector, region, year: {
-        "question": f"{sector}?",
+    return lambda client, plan: {
+        "question": plan["size_question"],
         "summary": text,
         "evidence": [{"id": "k1", "text": text, "sources": [SRC]}],
     }
@@ -57,16 +57,21 @@ def fake_cala(monkeypatch, settings):
             "headline": {"text": f"{market}: {len(facts)} facts", "sources": []}
         },
     )
-    monkeypatch.setattr(
-        "apps.markets.guard.check_market_text",
-        lambda text, known: {
+
+    def plan(text, known, year):
+        market = "fintech" if "fin" in text.lower() else "edtech"
+        place = "Finland" if "finland" in text.lower() else "Worldwide"
+        countries = ["Finland"] if place == "Finland" else []
+        data = {"market": market, "place": place, "countries": countries}
+        return {
             "kind": "market",
             "reason": "",
             "suggestions": [],
-            "canonical": "edtech",
+            "plan": planner.complete_plan(data, text, year),
             "tokens": {},
-        },
-    )
+        }
+
+    monkeypatch.setattr("apps.markets.planner.plan_market", plan)
     return {"calls": calls, "players": players}
 
 
@@ -75,7 +80,7 @@ def test_requires_auth(api_client):
 
 
 def test_open_runs_once_and_stores_history(auth_client, fake_cala):
-    res = auth_client.post(LIST_URL, {"text": "Ed Tech", "region": "europe"}, format="json")
+    res = auth_client.post(LIST_URL, {"text": "Ed Tech startups"}, format="json")
     assert res.status_code == 200
     a = res.json()["analysis"]
     assert a["sector"] == "edtech" and a["status"] == "ready"
@@ -84,7 +89,7 @@ def test_open_runs_once_and_stores_history(auth_client, fake_cala):
     assert fake_cala["calls"]["n"] == 4
 
     # Opening it again reads the stored result: no new Cala calls.
-    auth_client.post(LIST_URL, {"text": "edtech", "region": "europe"}, format="json")
+    auth_client.post(LIST_URL, {"text": "edtech"}, format="json")
     assert fake_cala["calls"]["n"] == 4
     history = auth_client.get(LIST_URL).json()
     assert [h["sector"] for h in history] == ["edtech"]
@@ -92,7 +97,7 @@ def test_open_runs_once_and_stores_history(auth_client, fake_cala):
 
 
 def test_refresh_updates_and_records_changes(auth_client, fake_cala):
-    a = auth_client.post(LIST_URL, {"text": "edtech", "region": "europe"}, format="json").json()["analysis"]
+    a = auth_client.post(LIST_URL, {"text": "edtech"}, format="json").json()["analysis"]
     fake_cala["players"]["companies"] = [
         {"name": "Beta", "description": None, "hq": None, "rounds": [], "investors": []}
     ]
@@ -106,8 +111,8 @@ def test_refresh_updates_and_records_changes(auth_client, fake_cala):
 
 
 def test_delete_one_and_clear_all(auth_client, fake_cala, user):
-    a = auth_client.post(LIST_URL, {"text": "edtech", "region": "europe"}, format="json").json()["analysis"]
-    auth_client.post(LIST_URL, {"text": "fintech", "region": "nordics", "force": True}, format="json")
+    a = auth_client.post(LIST_URL, {"text": "edtech"}, format="json").json()["analysis"]
+    auth_client.post(LIST_URL, {"text": "fintech in Finland"}, format="json")
     assert MarketAnalysis.objects.filter(user=user).count() == 2
 
     assert auth_client.delete(reverse("v1:markets:analysis", args=[a["id"]])).status_code == 204
@@ -119,15 +124,63 @@ def test_delete_one_and_clear_all(auth_client, fake_cala, user):
 
 def test_non_market_text_spends_nothing(auth_client, fake_cala, monkeypatch):
     monkeypatch.setattr(
-        "apps.markets.guard.check_market_text",
-        lambda text, known: {
+        "apps.markets.planner.plan_market",
+        lambda text, known, year: {
             "kind": "not_market",
             "reason": "A task.",
             "suggestions": [],
-            "canonical": "",
+            "plan": None,
             "tokens": {},
         },
     )
-    body = auth_client.post(LIST_URL, {"text": "fix my code", "region": "europe"}, format="json").json()
+    body = auth_client.post(LIST_URL, {"text": "fix my code"}, format="json").json()
     assert body["analysis"] is None and body["verdict"]["kind"] == "not_market"
     assert fake_cala["calls"]["n"] == 0
+
+
+def test_free_text_place_is_stored(auth_client, fake_cala):
+    a = auth_client.post(LIST_URL, {"text": "seed fintech in Finland"}, format="json").json()["analysis"]
+    assert a["sector"] == "fintech" and a["place"] == "Finland" and a["region"] == "finland"
+    assert a["plan"]["countries"] == ["Finland"]
+    assert a["plan"]["players_query"].startswith("companies.industry=fintech.location=Finland")
+
+
+def _start_without_running(monkeypatch, settings):
+    # The run is started but its thread never runs, so it stays "loading" for the test to stop.
+    settings.DECK_CHECK_ASYNC = True
+    monkeypatch.setattr(analysis, "_run_in_thread", lambda *a: None)
+
+
+def test_stop_first_run_removes_it(auth_client, fake_cala, monkeypatch, settings, user):
+    _start_without_running(monkeypatch, settings)
+    a = auth_client.post(LIST_URL, {"text": "edtech"}, format="json").json()["analysis"]
+    assert a["status"] == "loading" and a["can_stop"]
+    body = auth_client.post(reverse("v1:markets:analysis-cancel", args=[a["id"]])).json()
+    assert body == {"deleted": True, "analysis": None}
+    assert not MarketAnalysis.objects.filter(user=user).exists()
+
+
+def test_stop_refresh_rolls_back(auth_client, fake_cala, monkeypatch, settings):
+    a = auth_client.post(LIST_URL, {"text": "edtech"}, format="json").json()["analysis"]
+    _start_without_running(monkeypatch, settings)
+    auth_client.post(reverse("v1:markets:analysis-refresh", args=[a["id"]]))
+    row = MarketAnalysis.objects.get(pk=a["id"])
+    assert row.status == "loading" and row.runs == 2
+
+    body = auth_client.post(reverse("v1:markets:analysis-cancel", args=[a["id"]])).json()
+    restored = body["analysis"]
+    assert restored["status"] == "ready"
+    assert restored["data"]["players"]["companies"][0]["name"] == "Acme"
+
+    # The stopped run's late writes are discarded.
+    fake_cala["players"]["companies"] = [{"name": "Late", "rounds": [], "investors": []}]
+    analysis.run(a["id"], 2)
+    row.refresh_from_db()
+    assert row.status == "ready" and row.data["players"]["companies"][0]["name"] == "Acme"
+
+
+def test_players_query_is_validated():
+    built = planner.players_query("drop table", "ai chips", "Europe")
+    assert built.startswith("companies.industry=ai chips.location=Europe.order_by=funding DESC.limit=12")
+    q = planner.players_query("companies.industry=ai chips.limit=50", "ai chips", "")
+    assert q == "companies.industry=ai chips.limit=12.return(name, country, funding)"

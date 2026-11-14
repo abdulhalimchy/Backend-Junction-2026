@@ -64,6 +64,31 @@ SCHEMA = {
                 ],
             },
         },
+        "deals": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "company": {"type": "string"},
+                    "type": {
+                        "type": "string",
+                        "enum": ["funding", "grant", "acquisition", "merger", "ipo", "other"],
+                    },
+                    "stage": {"type": "string"},
+                    "amount": {"type": "number"},
+                    "scale": {
+                        "type": "string",
+                        "enum": ["unit", "thousand", "million", "billion", "trillion"],
+                    },
+                    "currency": {"type": "string"},
+                    "date": {"type": "string"},
+                    "counterparty": {"type": "string"},
+                    "quote": {"type": "string"},
+                    "factId": {"type": "string"},
+                },
+                "required": ["company", "type", "date", "quote", "factId"],
+            },
+        },
         "insights": {
             "type": "array",
             "items": {
@@ -78,7 +103,7 @@ SCHEMA = {
             },
         },
     },
-    "required": ["headline", "bullets", "sizes", "insights"],
+    "required": ["headline", "bullets", "sizes", "deals", "insights"],
 }
 
 SCALE = {"unit": 1, "thousand": 1e3, "million": 1e6, "billion": 1e9, "trillion": 1e12}
@@ -116,7 +141,12 @@ Write:
 1. headline: one sentence on the state of this market, with fact ids.
 2. bullets: 3 to 5 key takeaways for a founder or investor, each with fact ids.
 3. sizes: every market size or forecast figure in the S facts. For each: publisher, scope (what market the figure covers, e.g. "global mobile application market"), kind (size or forecast), year, amount exactly as the number appears in the quote, scale (unit, thousand, million, billion, trillion), currency (ISO code), cagrPercent and cagrPeriod if the same fact states them, quote (copied word for word from the fact, containing the amount and currency), and factId.
-4. insights: up to 6 trends, opportunities or risks, each with a short title, one or two sentences, and fact ids."""
+4. deals: every funding round, grant, acquisition, merger or IPO in the D facts, newest first, at most 15. For each:
+   company (the one raising or being acquired), type, stage (e.g. "Seed", "Series A", if stated), amount and scale
+   and currency (ISO code) only if the fact states them, date as "YYYY", "YYYY-MM" or "YYYY-MM-DD" (as precise as
+   the fact), counterparty (lead investors, or the buyer), quote (copied word for word from the fact, containing
+   the company and, if given, the amount), and factId.
+5. insights: up to 6 trends, opportunities or risks, each with a short title, one or two sentences, and fact ids."""
 
 
 def _norm(s: str) -> str:
@@ -214,6 +244,42 @@ def check(raw: dict, facts: list[dict]) -> dict:
             }
         )
 
+    deals = []
+    for d in raw.get("deals") or []:
+        checked += 1
+        what = f"Deal: {d.get('company', '')} {d.get('date', '')}"
+        fact = by_id.get(d.get("factId"))
+        if not fact:
+            dropped.append({"what": what, "reason": "cites no known fact"})
+            continue
+        quote = _norm(d.get("quote") or "")
+        if not quote or quote not in _norm(fact["text"]):
+            dropped.append({"what": what, "reason": "quote not found word for word in the cited fact"})
+            continue
+        value = None
+        amount, currency = d.get("amount"), str(d.get("currency") or "").upper()
+        if isinstance(amount, int | float) and amount > 0:
+            marks = CURRENCY_MARKS.get(currency, [currency.lower()])
+            in_quote = any(abs(n - amount) < 1e-9 for n in _numbers(d["quote"]))
+            if in_quote and currency and any(m and m in quote for m in marks):
+                value = {"amount": amount * SCALE.get(d.get("scale"), 1), "currency": currency}
+            # An amount that does not check out is left blank ("undisclosed"), the deal itself stays.
+        date = str(d.get("date") or "")
+        date = date if re.fullmatch(r"\d{4}(-\d{2}){0,2}", date) else ""
+        deals.append(
+            {
+                "fact_id": fact["id"],
+                "company": _clean_name(d.get("company")),
+                "type": d.get("type") if d.get("type") in DEAL_TYPES else "other",
+                "stage": _clean_name(d.get("stage")),
+                "value": value,
+                "date": date,
+                "counterparty": _clean_name(d.get("counterparty")),
+                "quote": d["quote"],
+                "sources": fact["sources"],
+            }
+        )
+
     insights = []
     for i in raw.get("insights") or []:
         c = claim(
@@ -234,11 +300,20 @@ def check(raw: dict, facts: list[dict]) -> dict:
         "headline": claim(raw.get("headline"), "Headline"),
         "bullets": bullets,
         "sizes": sorted(sizes, key=lambda x: x["year"] or 0),
+        "deals": sorted(deals, key=lambda x: x["date"], reverse=True),
         "insights": insights,
         "fact_count": len(facts),
         "checked": checked,
         "dropped": dropped,
     }
+
+
+DEAL_TYPES = {"funding", "grant", "acquisition", "merger", "ipo", "other"}
+
+
+def _clean_name(v: object) -> str:
+    s = " ".join(str(v or "").split())[:120]
+    return "" if _UNNAMED.match(s) else s
 
 
 def _site_name(source: dict | None) -> str:
