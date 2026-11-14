@@ -214,6 +214,15 @@ CALA_API_KEY = env("CALA_API_KEY", default="")
 # Alert scan (apps/alerts/scan.py): funding rounds dated within this many days count as news, including the
 # first time an entity is scanned. Older rounds are history, not alerts.
 ALERT_BACKFILL_DAYS = env.int("ALERT_BACKFILL_DAYS", default=60)
+# Nightly scan of every watched entity (apps/alerts/nightly.py), at this local time.
+ALERT_SCAN_TIME = env("ALERT_SCAN_TIME", default="02:00")
+ALERT_SCAN_TIMEZONE = env("ALERT_SCAN_TIMEZONE", default="Europe/Helsinki")
+# Run the nightly scheduler inside `runserver`. Production runs `manage.py run_alert_scheduler` (one process)
+# or `manage.py scan_alerts --nightly` from cron instead.
+ALERT_SCHEDULER_IN_PROCESS = env.bool("ALERT_SCHEDULER_IN_PROCESS", default=False)
+# Scan an entity as soon as someone starts watching it, in a background thread (ALERT_SCAN_ASYNC).
+ALERT_SCAN_ON_WATCH = env.bool("ALERT_SCAN_ON_WATCH", default=True)
+ALERT_SCAN_ASYNC = env.bool("ALERT_SCAN_ASYNC", default=True)
 
 # LLM for deck checks: reads the deck (claim extraction) and compares claims with Cala evidence (verdicts).
 # Provider "gemini" (default) or "anthropic". Leave DECK_CHECK_LLM_MODEL empty for the provider's default.
