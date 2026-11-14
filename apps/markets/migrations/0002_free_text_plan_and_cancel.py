@@ -18,7 +18,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='marketanalysis',
             name='plan',
-            field=models.JSONField(blank=True, default=dict, help_text='The Cala requests the LLM planned from the typed text (planner.py).'),
+            field=models.JSONField(blank=True, default=dict, help_text='The Cala requests the LLM planned from the typed text.'),
         ),
         migrations.AddField(
             model_name='marketanalysis',
