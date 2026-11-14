@@ -1,0 +1,7 @@
+# Core runtime dependencies (shared by every environment)
+Django>=5.2,<5.3                      # LTS release, supported until April 2028
+djangorestframework>=3.16,<4
+djangorestframework-simplejwt>=5.5,<6
+django-cors-headers>=4.9,<5
+django-environ>=0.12,<1
+drf-spectacular>=0.28,<1
