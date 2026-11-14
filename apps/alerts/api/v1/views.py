@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import mixins, status, viewsets
@@ -5,11 +6,17 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 
-from apps.alerts import scan
-from apps.alerts.models import Alert
+from apps.alerts import nightly, scan
+from apps.alerts.models import Alert, ScanRun
 from apps.core.cala import CalaError
 
-from .serializers import AlertSerializer, MarkedReadSerializer, ScanResultSerializer, UnreadCountSerializer
+from .serializers import (
+    AlertSerializer,
+    MarkedReadSerializer,
+    ScanResultSerializer,
+    ScheduleSerializer,
+    UnreadCountSerializer,
+)
 
 
 @extend_schema(tags=["alerts"])
@@ -31,6 +38,8 @@ class AlertViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
                 qs = qs.filter(kind=kind)
             if event := params.get("event"):
                 qs = qs.filter(event__slug=event)
+            if cala_id := params.get("cala_id"):
+                qs = qs.filter(cala_id=cala_id)
         return qs
 
     @extend_schema(
@@ -38,6 +47,7 @@ class AlertViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
             OpenApiParameter("unread", bool, required=False),
             OpenApiParameter("kind", enum=Alert.Kind.values, required=False),
             OpenApiParameter("event", str, required=False, description="Event slug, e.g. slush-2026."),
+            OpenApiParameter("cala_id", str, required=False, description="Alerts about this watched entity."),
         ]
     )
     def list(self, request, *args, **kwargs):
@@ -73,10 +83,27 @@ class AlertViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
     def scan(self, request):
         """Check the companies and investors you watch for changes now. Runs inline; costs Cala calls."""
         try:
-            result = scan.scan(scan.targets(request.user))
+            pairs = scan.targets(request.user)
+            _, result = scan.run(pairs, trigger=ScanRun.Trigger.MANUAL, user_id=request.user.pk)
         except CalaError as exc:
             return Response(
                 {"error": {"status_code": 503, "code": "cala_unavailable", "message": str(exc)}},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         return Response(result.as_dict())
+
+    @extend_schema(responses=ScheduleSerializer)
+    @action(detail=False, methods=["get"])
+    def schedule(self, request):
+        """When the watch list is checked: the nightly schedule, the last nightly run, your last check."""
+        runs = ScanRun.objects.exclude(status=ScanRun.Status.RUNNING)
+        data = ScheduleSerializer(
+            {
+                "time": settings.ALERT_SCAN_TIME,
+                "timezone": settings.ALERT_SCAN_TIMEZONE,
+                "next_run_at": nightly.next_slot(),
+                "last_nightly": runs.filter(trigger=ScanRun.Trigger.NIGHTLY).first(),
+                "last_manual": runs.filter(trigger=ScanRun.Trigger.MANUAL, user=request.user).first(),
+            }
+        ).data
+        return Response(data)

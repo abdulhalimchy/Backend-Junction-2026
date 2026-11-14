@@ -25,4 +25,6 @@ REST_FRAMEWORK["DEFAULT_PARSER_CLASSES"] = [  # noqa: F405
     "rest_framework.parsers.MultiPartParser",
 ]
 
+ALERT_SCHEDULER_IN_PROCESS = env.bool("ALERT_SCHEDULER_IN_PROCESS", default=True)
+
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"

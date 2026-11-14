@@ -1,9 +1,9 @@
 # ruff: noqa: E501
-"""Background lookup for a startup added by domain.
+"""Background lookup for a startup added by domain, or picked from a Cala name search.
 
 Two sources, most trusted first:
-1. Cala: the company whose website on record matches the domain (or whose name matches the name the website
-   gives). Every value keeps Cala's sources.
+1. Cala: the company the user picked from `search_cala`, else the one whose website on record matches the
+   domain (or whose name matches the name the website gives). Every value keeps Cala's sources.
 2. The company's own website, read by the LLM. Values are cited to the page they came from.
 
 Nothing is guessed: a field neither source states stays empty for the user to fill in.
@@ -200,6 +200,51 @@ def read_website(domain: str) -> tuple[dict, str] | None:
 
 # -- Cala -------------------------------------------------------------------
 
+SEARCH_PROPS = ["name", "description", "website", "headquarters_address", "founding_date"]
+SEARCH_LIMIT = 6
+
+
+def search_cala(text: str, client: CalaClient | None = None) -> list[dict]:
+    """Companies in Cala named like `text`, for the user to pick one. The same name search as company search.
+
+    Each candidate carries its website on record (the lookup reads that site next) and enough to tell
+    namesakes apart. An exact name match comes first, then candidates with a website on record: ETFs and
+    shell entities named after a company rarely have one.
+    """
+    client = client or CalaClient()
+    hits = client.search_entities(text.strip()[:100], ["Company", "Organization"], 8)[:SEARCH_LIMIT]
+
+    def details(hit):
+        try:
+            return client.retrieve_entity(hit["id"], {"properties": SEARCH_PROPS})
+        except CalaError as exc:
+            logger.info("Could not read Cala entity %s: %s", hit["id"], exc)
+            return {}
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        entities = list(ex.map(details, hits))
+
+    out = []
+    for hit, e in zip(hits, entities, strict=True):
+
+        def val(key, e=e):
+            p = _prop(e, key)
+            return str(p["value"]).strip() if p else ""
+
+        out.append(
+            {
+                "id": hit["id"],
+                "name": hit.get("name") or val("name"),
+                "description": val("description") or str(hit.get("description") or ""),
+                "domain": normalise_domain(val("website")) if val("website") else "",
+                "headquarters": val("headquarters_address"),
+                "founded": val("founding_date")[:4],
+            }
+        )
+    wanted = normalise_name(text)
+    out.sort(key=lambda c: (normalise_name(c["name"]) != wanted, not c["domain"]))
+    return out
+
 
 def find_in_cala(client: CalaClient, domain: str, names: list[str], name_confirmed: bool) -> dict | None:
     """The Cala company for this domain, or None. Among matches, the one with the most data.
@@ -305,7 +350,7 @@ def run_enrichment(startup_id) -> None:
     startup.enrichment_status = Startup.Enrichment.PROCESSING
     startup.save(update_fields=["enrichment_status", "updated_at"])
     try:
-        suggestions, cala_id, note = enrich(startup.domain)
+        suggestions, cala_id, note, domain = enrich(startup.domain, startup.cala_company_id)
     except Exception as exc:  # noqa: BLE001 - surfaced to the user; the draft stays editable
         logger.exception("Startup lookup failed for %s", startup.domain)
         Startup.objects.filter(pk=startup.pk).update(
@@ -320,17 +365,32 @@ def run_enrichment(startup_id) -> None:
         enrichment_note=note,
         suggestions=suggestions,
         cala_company_id=cala_id,
+        domain=domain,
         enriched_at=timezone.now(),
     )
 
 
-def enrich(domain: str) -> tuple[dict, str, str]:
-    """(suggestions, Cala company id, note for the user)."""
-    website = read_website(domain)
+def enrich(domain: str, cala_id: str = "") -> tuple[dict, str, str, str]:
+    """(suggestions, Cala company id, note for the user, domain).
+
+    With `cala_id` (a company the user picked), that company is used and, when no domain was given, its
+    website on record is the site read. Otherwise Cala is searched for the company behind `domain`.
+    """
+    entity = None
+    if cala_id and is_configured():
+        try:
+            entity = CalaClient().retrieve_entity(
+                cala_id, {"properties": PROFILE_PROPS, "relationships": COMPANY_RELATIONSHIPS}
+            )
+        except CalaError as exc:
+            logger.warning("Cala retrieve failed for %s: %s", cala_id, exc)
+        if entity and not domain and (p := _prop(entity, "website")):
+            domain = normalise_domain(str(p["value"]))
+
+    website = read_website(domain) if domain else None
     site_fields, site_url = website if website else ({}, "")
 
-    entity = None
-    if is_configured():
+    if entity is None and domain and is_configured():
         names = [site_fields.get("name", ""), *site_fields.get("_other_names", []), domain_stem(domain)]
         try:
             entity = find_in_cala(CalaClient(), domain, names, name_confirmed=bool(site_fields.get("name")))
@@ -355,14 +415,18 @@ def enrich(domain: str) -> tuple[dict, str, str]:
             suggestions[field] = {"value": c["value"], "origin": "cala", "sources": c["sources"]}
         elif site_fields.get(field):
             suggestions[field] = {"value": site_fields[field], "origin": "website", "sources": [site_source]}
-    if "name" not in suggestions:
+    if "name" not in suggestions and domain:
         suggestions["name"] = {"value": domain_stem(domain).capitalize(), "origin": "domain", "sources": []}
 
     found = [p for p, ok in (("Cala", entity), ("the company website", website)) if ok]
     if found:
         note = f"Filled in from {' and '.join(found)}. Check each value before saving."
+    elif cala_id:
+        note = "Could not read this company from Cala. Fill in the details yourself."
     else:
         note = "Nothing on record for this domain yet. Fill in the details yourself."
-    if not website:
+    if not domain:
+        note += " Cala has no website on record for it; add one if you know it."
+    elif not website:
         note += " The website could not be read automatically."
-    return suggestions, (entity or {}).get("id", ""), note
+    return suggestions, (entity or {}).get("id", "") or cala_id, note, domain

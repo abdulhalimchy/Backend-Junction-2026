@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime
 import logging
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -36,7 +37,7 @@ from apps.core.cala import CalaClient, CalaError, to_sources
 from apps.events.models import Event
 from apps.watchlist.models import WatchItem
 
-from .models import Alert, EntitySnapshot
+from .models import Alert, EntitySnapshot, ScanRun
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,50 @@ def scan(
         result.entities += 1
         result.alerts_created += fan_out(entity_type, cala_id, changes)
     return result
+
+
+def run(pairs: list[tuple[str, str]], *, trigger: str, user_id=None, **kwargs) -> tuple[ScanRun, ScanResult]:
+    """`scan`, recorded as a ScanRun (for "last checked" in the app and the admin). Re-raises errors."""
+    record = ScanRun.objects.create(trigger=trigger, user_id=user_id)
+    try:
+        result = scan(pairs, **kwargs)
+    except Exception as exc:
+        record.status, record.errors = ScanRun.Status.FAILED, {"": str(exc)}
+        record.finished_at = timezone.now()
+        record.save(update_fields=["status", "errors", "finished_at", "updated_at"])
+        raise
+    record.status = ScanRun.Status.OK
+    record.finished_at = timezone.now()
+    record.entities, record.alerts_created = result.entities, result.alerts_created
+    record.skipped, record.errors = len(result.skipped), result.errors
+    record.save()
+    return record, result
+
+
+def scan_new_watch(item: WatchItem) -> None:
+    """Check a newly watched entity right away, so its recent rounds show up in Alerts without waiting a
+    night. In a background thread unless ALERT_SCAN_ASYNC is off; failures are logged, never raised."""
+    if not settings.ALERT_SCAN_ON_WATCH or item.entity_type not in QUERIES or not UUID.match(item.cala_id):
+        return
+    pair, user_id = (item.entity_type, item.cala_id), item.user_id
+
+    def work():
+        from django.db import connection
+
+        try:
+            run([pair], trigger=ScanRun.Trigger.WATCH, user_id=user_id)
+        except Exception:
+            logger.exception("Scan of new watch %s failed", pair)
+        finally:
+            if settings.ALERT_SCAN_ASYNC:
+                connection.close()
+
+    if settings.ALERT_SCAN_ASYNC:
+        transaction.on_commit(
+            lambda: threading.Thread(target=work, daemon=True, name=f"watch-scan-{item.cala_id}").start()
+        )
+    else:
+        work()
 
 
 # -- one entity ------------------------------------------------------------------------------------------
@@ -435,6 +480,8 @@ def fan_out(entity_type: str, cala_id: str, changes: list[Change]) -> int:
                         user_id=user_id,
                         dedupe_key=f"{cala_id}:{c.key}",
                         defaults={
+                            "entity_type": entity_type,
+                            "cala_id": cala_id,
                             "kind": kind,
                             "title": c.title[:255],
                             "body": c.body,

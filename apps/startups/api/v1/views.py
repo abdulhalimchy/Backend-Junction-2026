@@ -4,11 +4,17 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 
-from apps.core.cala import is_configured
-from apps.startups import analysis, services
+from apps.core.cala import CalaError, is_configured
+from apps.startups import analysis, enrichment, services
 from apps.startups.models import Startup, StartupAnalysis
 
-from .serializers import StartupAnalysisSerializer, StartupLookupSerializer, StartupSerializer
+from .serializers import (
+    CalaCandidateSerializer,
+    StartupAnalysisSerializer,
+    StartupLookupSerializer,
+    StartupSearchSerializer,
+    StartupSerializer,
+)
 
 KIND_PARAM = OpenApiParameter(
     "kind", OpenApiTypes.STR, OpenApiParameter.PATH, enum=list(StartupAnalysis.Kind.values)
@@ -19,7 +25,8 @@ KIND_PARAM = OpenApiParameter(
 class StartupViewSet(viewsets.ModelViewSet):
     """The signed-in founder's startups. Private to their owner.
 
-    Add one by hand with POST, or by domain with POST lookup/: that returns a draft whose `suggestions`
+    Add one by hand with POST, or with POST lookup/ by domain or by a Cala company picked from GET search/
+    (a name search): that returns a draft whose `suggestions`
     fill in while `enrichment_status` moves to completed. PATCH the draft with the reviewed values and
     `is_draft: false` to save it, or DELETE it to cancel.
 
@@ -48,11 +55,30 @@ class StartupViewSet(viewsets.ModelViewSet):
     @extend_schema(request=StartupLookupSerializer, responses={201: StartupSerializer})
     @action(detail=False, methods=["post"])
     def lookup(self, request):
-        """Start a startup from its domain. Poll the returned draft until `enrichment_status` is completed."""
+        """Start a startup from its domain or a picked Cala company. Poll the draft until `enrichment_status`
+        is completed."""
         serializer = StartupLookupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        startup = services.start_lookup(user=request.user, domain=serializer.validated_data["domain"])
+        data = serializer.validated_data
+        startup = services.start_lookup(user=request.user, domain=data["domain"], cala_id=data["cala_id"])
         return Response(StartupSerializer(startup).data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        parameters=[OpenApiParameter("q", OpenApiTypes.STR, OpenApiParameter.QUERY, required=True)],
+        responses={200: CalaCandidateSerializer(many=True)},
+    )
+    @action(detail=False, methods=["get"])
+    def search(self, request):
+        """Companies in Cala named like `q`, to pick from when adding a startup by name."""
+        params = StartupSearchSerializer(data=request.query_params)
+        params.is_valid(raise_exception=True)
+        if not is_configured():
+            return Response({"error": {"message": "Cala is not configured (CALA_API_KEY)."}}, status=503)
+        try:
+            results = enrichment.search_cala(params.validated_data["q"])
+        except CalaError as exc:
+            return Response({"error": {"message": f"Cala search failed: {exc}"}}, status=502)
+        return Response({"results": CalaCandidateSerializer(results, many=True).data})
 
     @extend_schema(
         parameters=[KIND_PARAM],

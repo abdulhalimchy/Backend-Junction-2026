@@ -74,13 +74,36 @@ class StartupSerializer(serializers.ModelSerializer):
 
 
 class StartupLookupSerializer(serializers.Serializer):
-    domain = serializers.CharField(max_length=255)
+    """A domain, a Cala company picked from search/, or both."""
+
+    domain = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    cala_id = serializers.UUIDField(required=False, allow_null=True, default=None)
 
     def validate_domain(self, value):
-        domain = clean_domain(value)
-        if not domain:
-            raise serializers.ValidationError("Enter the company's domain.")
-        return domain
+        return clean_domain(value)
+
+    def validate(self, attrs):
+        if not attrs["domain"] and not attrs["cala_id"]:
+            raise serializers.ValidationError(
+                {"domain": "Enter the company's domain or pick it from the search."}
+            )
+        attrs["cala_id"] = str(attrs["cala_id"]) if attrs["cala_id"] else ""
+        return attrs
+
+
+class StartupSearchSerializer(serializers.Serializer):
+    q = serializers.CharField(min_length=2, max_length=100, trim_whitespace=True)
+
+
+class CalaCandidateSerializer(serializers.Serializer):
+    """A company in Cala the user can pick when adding a startup by name."""
+
+    id = serializers.CharField()
+    name = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    domain = serializers.CharField(allow_blank=True, help_text="Website on record in Cala; empty if none.")
+    headquarters = serializers.CharField(allow_blank=True)
+    founded = serializers.CharField(allow_blank=True, help_text="YYYY, or empty.")
 
 
 class StartupAnalysisSerializer(serializers.ModelSerializer):

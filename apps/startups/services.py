@@ -10,10 +10,15 @@ from .models import PROFILE_FIELDS, Startup
 
 
 @transaction.atomic
-def start_lookup(*, user, domain: str) -> Startup:
-    """A draft startup for `domain`; the lookup runs in the background and fills `suggestions`."""
+def start_lookup(*, user, domain: str = "", cala_id: str = "") -> Startup:
+    """A draft startup for `domain` or the picked Cala company `cala_id`; the lookup runs in the background
+    and fills `suggestions` (and the domain, from Cala's website on record, when none was given)."""
     startup = Startup.objects.create(
-        user=user, domain=domain, is_draft=True, enrichment_status=Startup.Enrichment.PENDING
+        user=user,
+        domain=domain,
+        cala_company_id=cala_id,
+        is_draft=True,
+        enrichment_status=Startup.Enrichment.PENDING,
     )
     transaction.on_commit(lambda: enqueue(startup.pk))
     return startup

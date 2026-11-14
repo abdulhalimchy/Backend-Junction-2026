@@ -1,6 +1,7 @@
 from django.contrib import admin, messages
 
 from apps.alerts import scan
+from apps.alerts.models import ScanRun
 from apps.core.cala import CalaError
 
 from .models import WatchItem
@@ -19,7 +20,7 @@ class WatchItemAdmin(admin.ModelAdmin):
     def scan_for_changes(self, request, queryset):
         pairs = sorted(set(queryset.values_list("entity_type", "cala_id")))
         try:
-            result = scan.scan(pairs)
+            _, result = scan.run(pairs, trigger=ScanRun.Trigger.COMMAND)
         except CalaError as exc:
             self.message_user(request, f"Scan failed: {exc}", messages.ERROR)
             return

@@ -46,7 +46,6 @@ apps/
     tests/
   events/             event spaces (Slush 2026) and the companies/investors attending
   alerts/             per-user notifications, with read/unread state
-  networking/         the user's private "met" list
   deck_checks/        PDF pitch-deck uploads and per-claim verification results
   watchlist/          companies, investors and people a user watches (tags, notes)
 requirements/         base.txt, development.txt, production.txt
@@ -91,21 +90,22 @@ DRF `NamespaceVersioning` reads the namespace, so `request.version == "v1"`. URL
 | GET | `/api/v1/events/` | bearer | Active events, with attendee counts and `new_this_week` |
 | GET | `/api/v1/events/{slug}/` | bearer | One event, e.g. `slush-2026` |
 | GET | `/api/v1/events/{slug}/attendees/` | bearer | Attending companies/investors (`?type=company\|investor`, `?q=`) |
+| GET, POST | `/api/v1/events/{slug}/rsvps/` | bearer | Side events you are going to (`mine`) and anonymous counts per side event (`counts`); POST `{side_event_id}` to go |
+| DELETE | `/api/v1/events/{slug}/rsvps/{side_event_id}/` | bearer | Not going any more |
 | GET | `/api/v1/alerts/` | bearer | Your alerts (`?unread=true`, `?kind=`, `?event=`) |
 | GET | `/api/v1/alerts/{id}/` | bearer | One alert |
 | POST | `/api/v1/alerts/{id}/read/` | bearer | Mark one alert read |
 | POST | `/api/v1/alerts/read-all/` | bearer | Mark all alerts read |
 | GET | `/api/v1/alerts/unread-count/` | bearer | `{"unread": n}` for the badge |
+| GET | `/api/v1/alerts/schedule/` | bearer | Nightly scan time and timezone, next run, last nightly run, your last manual check |
 | POST | `/api/v1/alerts/scan/` | bearer | Check the companies and investors you watch for changes now; returns `{entities, alerts_created, skipped, errors}` (throttled, `THROTTLE_ALERT_SCAN`, 20/hour) |
-| GET, POST | `/api/v1/networking/met/` | bearer | List (`?event=`, `?person=`, `?q=`) or add people you met |
-| GET, PATCH, DELETE | `/api/v1/networking/met/{id}/` | bearer | One met entry |
 | GET, POST | `/api/v1/deck-checks/` | bearer | List your deck checks, or upload a PDF (`multipart/form-data`) |
 | GET, DELETE | `/api/v1/deck-checks/{id}/` | bearer | One deck check with its claims; delete also removes the file |
 | GET, POST | `/api/v1/watchlist/` | bearer | List (`?type=`, `?tag=` or `none`, `?cala_id=`, `?q=`) or watch an entity; watching it again returns the existing item (200) |
 | GET, PATCH, DELETE | `/api/v1/watchlist/{id}/` | bearer | One watch item; PATCH changes `name`, `tag`, `note` only |
 | GET | `/api/v1/watchlist/summary/` | bearer | `{"total", "by_type", "by_tag"}` for the "Watching N" panel |
 
-Users only ever see their own alerts, met entries, deck checks and watch items; anyone else's return 404. Events are read-only over the API and managed in the admin for now (later by a Cala sync job). Alerts are created by the backend, never by clients.
+Users only ever see their own alerts, deck checks and watch items; anyone else's return 404. Events are read-only over the API and managed in the admin for now (later by a Cala sync job). Alerts are created by the backend, never by clients.
 
 **Alert scan** (`apps/alerts/scan.py`). Alerts are created by the backend, from what Cala has on record for every company and investor on a watch list (plus each founder's own `cala_company_id`). One lookup per entity, however many people watch it; the facts are compared with the last `EntitySnapshot`:
 
@@ -114,7 +114,15 @@ Users only ever see their own alerts, met entries, deck checks and watch items; 
 - **Event attendance** at an event space we host (matched on `Event.cala_event_id`; Slush 2026 is seeded).
 - **Headcount**: the employee count range changed between two scans.
 
-Each alert gets the watcher's `reason` (from their tag) and a `dedupe_key`, unique per user, so reruns never repeat an alert. Run it with `python manage.py scan_alerts` (`--user`, `--entity`, `--backfill-days`), from the admin (Watch items → "Scan selected entities"), or per user via `POST /alerts/scan/` (the "Check for changes" button). Demo fixture ids (not Cala UUIDs) are skipped. For a schedule, run the command from cron.
+Each alert gets the watcher's `reason` (from their tag) and a `dedupe_key`, unique per user, so reruns never repeat an alert. Run it with `python manage.py scan_alerts` (`--user`, `--entity`, `--backfill-days`), from the admin (Watch items → "Scan selected entities"), or per user via `POST /alerts/scan/` (the "Check for changes" button). Demo fixture ids (not Cala UUIDs) are skipped. Each alert records the watched entity it is about (`entity_type`, `cala_id`; filter with `GET /alerts/?cala_id=`), and every run is recorded as a `ScanRun`.
+
+**Nightly scan** (`apps/alerts/nightly.py`). Every watched entity is checked each night at `ALERT_SCAN_TIME` (default `02:00`) in `ALERT_SCAN_TIMEZONE` (default `Europe/Helsinki`). A missed night (server down) is caught up as soon as the scheduler runs again, and a failed run is retried after an hour. Ways to run it, all safe to combine:
+
+- `python manage.py runserver`: in development the scheduler runs inside the dev server (`ALERT_SCHEDULER_IN_PROCESS`, on by default in development settings).
+- `python manage.py run_alert_scheduler`: a long-running worker process (production; run exactly one).
+- `python manage.py scan_alerts --nightly`: runs only if due, so cron or a hosted scheduler can call it hourly.
+
+A newly watched entity is also checked right away in a background thread (`ALERT_SCAN_ON_WATCH`), so its recent rounds appear without waiting a night. `GET /api/v1/alerts/schedule/` returns the schedule, the last nightly run and your last manual check; watch list items carry `unread_alerts`, `last_checked_at` and `in_cala`.
 
 Deck uploads are checked for size (`DECK_CHECK_MAX_UPLOAD_MB`, 20 by default), a `.pdf` name and real PDF content, and are stored under a random name. After the upload returns, a background thread (`apps/deck_checks/pipeline.py`) runs the check: `pending` → `processing` → `completed` or `failed` (poll `GET /deck-checks/{id}/`; `POST /deck-checks/{id}/retry/` re-runs a failed one).
 
@@ -165,5 +173,31 @@ python manage.py collectstatic --noinput
 python manage.py check --deploy
 gunicorn config.wsgi:application
 ```
+
+### Deploy checklist
+
+- [ ] Environment variables set (above), plus `CALA_API_KEY`, `GEMINI_API_KEY`, and `ALERT_SCAN_TIME` / `ALERT_SCAN_TIMEZONE` if 02:00 Helsinki time is not right.
+- [ ] `python manage.py migrate` run against the production database.
+- [ ] Web process running: `gunicorn config.wsgi:application`.
+- [ ] **Nightly alert scan scheduled** (pick one; the web process does not run it in production):
+  - **A worker process** that runs next to the web process and stays up:
+    `python manage.py run_alert_scheduler`. Run exactly one. On Heroku, Railway or Render, add it as a worker /
+    background worker, e.g. in a `Procfile`:
+
+    ```
+    web: gunicorn config.wsgi:application
+    worker: python manage.py run_alert_scheduler
+    ```
+
+  - **A cron job** that calls `python manage.py scan_alerts --nightly`. It only scans when the night's run is due,
+    so calling it hourly is safe and retries a failed night. On a server, `crontab -e`:
+
+    ```
+    0 * * * * cd /srv/warmline-backend && .venv/bin/python manage.py scan_alerts --nightly >> /var/log/warmline-alerts.log 2>&1
+    ```
+
+    On Render, Railway or Fly.io, create a cron job with schedule `0 * * * *` and the same command.
+- [ ] After the first night, confirm a "Nightly schedule" run with status "Finished" in the admin (Alerts → Scan runs),
+  or check `GET /api/v1/alerts/schedule/` (`last_nightly`).
 
 Uploaded files are only served by Django in development. Before production, move media to private object storage (for example S3 via `django-storages`) and serve decks through short-lived signed URLs.
