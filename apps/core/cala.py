@@ -23,7 +23,7 @@ class CalaError(Exception):
     def __init__(self, message: str, status: int = 0, kind: str = "upstream"):
         super().__init__(message)
         self.status = status
-        self.kind = kind  # missing_key | rate_limited | invalid_request | upstream
+        self.kind = kind  # missing_key | rate_limited | no_credit | invalid_request | upstream
 
 
 def is_configured() -> bool:
@@ -73,6 +73,8 @@ class CalaClient:
             time.sleep(BACKOFF_SECONDS * (attempt + 1))
         if res.status_code == 429:
             raise CalaError("Cala rate limit exceeded", 429, "rate_limited")
+        if res.status_code == 402:
+            raise CalaError("Cala credit balance is empty", 402, "no_credit")
         if res.status_code in (401, 403):
             raise CalaError("Cala rejected the API key", res.status_code, "missing_key")
         if res.status_code == 422:
@@ -80,6 +82,10 @@ class CalaClient:
         if res.status_code >= 400:
             raise CalaError(f"Cala returned {res.status_code}: {res.text[:300]}", res.status_code)
         return res.json()
+
+    def request(self, method: str, path: str, *, json=None, params=None):
+        """Any Cala request, with the same retries and error handling (used by the frontend gateway)."""
+        return self._request(method, path, json=json, params=params)
 
     def search_entities(self, name: str, entity_types: list[str] | None = None, limit: int = 8) -> list[dict]:
         params: list[tuple[str, Any]] = [("name", name[:100]), ("limit", limit)]

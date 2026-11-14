@@ -39,3 +39,44 @@ class SummaryRequestSerializer(serializers.Serializer):
     region = serializers.CharField(max_length=80)
     year = serializers.IntegerField(min_value=2000, max_value=2100)
     facts = FactSerializer(many=True, allow_empty=False, max_length=MAX_FACTS)
+
+
+REGION_KEYS = ["anywhere", "europe", "nordics", "finland", "baltics", "dach", "benelux", "uki", "us"]
+
+
+class OpenAnalysisSerializer(serializers.Serializer):
+    """Open (or start) the analysis of a typed market. force skips the market-text guard."""
+
+    text = serializers.CharField(max_length=120, trim_whitespace=True)
+    region = serializers.ChoiceField(choices=REGION_KEYS, default="europe")
+    force = serializers.BooleanField(default=False)
+
+
+class MarketAnalysisListSerializer(serializers.Serializer):
+    """One history row: enough to list it without the full report."""
+
+    id = serializers.UUIDField()
+    sector = serializers.CharField()
+    typed = serializers.CharField()
+    region = serializers.CharField()
+    year = serializers.IntegerField()
+    status = serializers.CharField()
+    runs = serializers.IntegerField()
+    error = serializers.CharField()
+    headline = serializers.SerializerMethodField()
+    player_count = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField()
+    updated_at = serializers.DateTimeField()
+    finished_at = serializers.DateTimeField(allow_null=True)
+
+    def get_headline(self, obj) -> str:
+        return (((obj.data or {}).get("summary") or {}).get("headline") or {}).get("text") or ""
+
+    def get_player_count(self, obj) -> int:
+        return len(((obj.data or {}).get("players") or {}).get("companies") or [])
+
+
+class MarketAnalysisSerializer(MarketAnalysisListSerializer):
+    data = serializers.JSONField()
+    changes = serializers.JSONField()
+    started_at = serializers.DateTimeField(allow_null=True)
