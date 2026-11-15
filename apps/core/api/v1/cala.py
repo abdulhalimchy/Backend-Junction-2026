@@ -4,7 +4,7 @@ Cala gateway for the Next.js frontend: the only way the frontend reaches Cala.
 The frontend keeps its own shaping of Cala data, but every request goes out from here, so the Cala API key
 lives only in the backend. Only the five read endpoints the app uses are forwarded, with the caller's body
 and query unchanged. Cala's failures come back with their status and a `code` the frontend maps to its own
-error kinds (missing_key, rate_limited, no_credit, invalid_request, upstream).
+error kinds (missing_key, rate_limited, no_credit, invalid_request, not_found, upstream).
 """
 
 from __future__ import annotations
@@ -68,8 +68,12 @@ class CalaGatewayView(APIView):
                 method, f"/{path}", json=request.data if method == "POST" else None, params=params or None
             )
         except CalaError as exc:
+            if exc.kind == "upstream" and exc.status == 404:
+                # Cala has no such entity (often a merged one). Not an outage: the frontend falls back to a
+                # name search on a 404 (lib/cala/slush.ts), so pass it through as one.
+                return _error(404, "not_found", str(exc))
             status = STATUS_BY_KIND.get(exc.kind) or (exc.status if 400 <= exc.status < 600 else 502)
             if exc.kind == "upstream" and status < 500:
-                status = 502  # Cala's own 4xx (e.g. 404) is still a failed upstream call for the frontend
+                status = 502  # Cala's other 4xx are still a failed upstream call for the frontend
             return _error(status, exc.kind, str(exc))
         return Response(data)

@@ -69,7 +69,8 @@ def test_rejects_other_requests(auth_client, calls, method, path):
         (CalaError("Cala rate limit exceeded", 429, "rate_limited"), 429, "rate_limited"),
         (CalaError("CALA_API_KEY is not set", 401, "missing_key"), 503, "missing_key"),
         (CalaError("Cala rejected the request: bad", 422, "invalid_request"), 422, "invalid_request"),
-        (CalaError("Cala returned 404: nope", 404), 502, "upstream"),
+        (CalaError("Cala returned 404: nope", 404), 404, "not_found"),
+        (CalaError("Cala returned 410: gone", 410), 502, "upstream"),
         (CalaError("Could not reach Cala", 0), 502, "upstream"),
     ],
 )
