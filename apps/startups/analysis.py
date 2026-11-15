@@ -2,8 +2,9 @@
 """On-demand Cala analyses for a startup's tabs, stored in StartupAnalysis.
 
 Nothing here runs when a startup is added: each analysis starts only when the user asks for it (or refreshes
-it) on its tab. No LLM is involved; every value comes from Cala entity retrieval with its sources.
-Knowledge-query rows are only used to find which companies to retrieve.
+it) on its tab. Every value comes from Cala entity retrieval with its sources. The only LLM step is planning
+the searches for companies like the startup (search_terms); knowledge-query rows only pick which companies
+to retrieve.
 
 competitors: the companies Cala records as competitors (matched startups) or whose description matches the
     startup's industry (not matched), each with stage, money raised, last round, lead investor and team, plus
@@ -28,12 +29,15 @@ from django.utils import timezone
 from apps.core.cala import CalaClient, to_sources
 from apps.deck_checks.evidence import _prop, normalise_name
 
+from . import search_terms
 from .enrichment import STAGES, _label
 from .models import Startup, StartupAnalysis
 
 logger = logging.getLogger(__name__)
 
 MAX_COMPANIES = 10
+MAX_INVESTOR_PEERS = 16  # more companies for investors: many peers have no investors on record
+MIN_COMPETITORS = 3  # fewer competitors on record than this: search for peers as well
 MAX_ROUNDS_PER_COMPANY = 6
 MAX_CANDIDATE_INVESTORS = 24
 STALE_RUN = timedelta(minutes=5)  # a "loading" run older than this is assumed dead and may be restarted
@@ -103,25 +107,91 @@ def run(analysis_id) -> None:
 # -- finding companies like the startup ---------------------------------------
 
 
-def find_companies(client: CalaClient, s: Startup) -> dict:
-    """{mode, query, ids, unresolved}. mode is "competitors" (matched in Cala), "peers" or "none"."""
+def find_companies(client: CalaClient, s: Startup, limit: int = MAX_COMPANIES) -> dict:
+    """
+    {mode, query, searches, ids, unresolved}. mode "competitors": Cala's competitors of the matched company.
+    "peers": companies found by the LLM-planned searches (see search_terms), used when the startup has no
+    Cala record or fewer than MIN_COMPETITORS competitors on record. "none": nothing to search on.
+    """
     if s.cala_company_id:
-        mode, query = "competitors", f"companies.competitors_of={s.name}.return(name, country)"
-    elif s.industry or s.description:
-        topic = (s.industry or s.description)[:80]
-        mode, query = "peers", f"startups.description={topic}.return(name, country, founded_year)"
-    else:
-        return {"mode": "none", "query": "", "ids": [], "unresolved": 0}
-    res = client.knowledge_query(query)
-    rows = list(dict.fromkeys(n for n in map(_row_name, res.get("results") or []) if n))[:MAX_COMPANIES]
-    linked = [e for e in res.get("entities") or [] if e.get("entity_type") in COMPANY_TYPES]
-    me = normalise_name(s.name)
+        query = f"companies.competitors_of={s.name}.return(name, country)"
+        found = _resolve_rows(client, s, [_query_rows(client, query)], limit)
+        found.pop("per_search")
+        if len(found["ids"]) >= MIN_COMPETITORS:
+            searches = [{"label": f"Competitors of {s.name}", "query": query, "found": len(found["ids"])}]
+            return {"mode": "competitors", "query": query, "searches": searches, **found}
 
-    def resolve(row: str) -> str | None:
+    searches = search_terms.plan_searches(s)
+    if not searches:
+        return {"mode": "none", "query": "", "searches": [], "ids": [], "unresolved": 0}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        results = list(ex.map(lambda q: _query_rows(client, q["query"]), searches))
+    found = _resolve_rows(client, s, results, limit)
+    return {
+        "mode": "peers",
+        "query": searches[0]["query"],
+        "searches": [{**q, "found": n} for q, n in zip(searches, found.pop("per_search"), strict=True)],
+        **found,
+    }
+
+
+def similar_peers(s: Startup, mode: str, peers: list[dict]) -> tuple[list[dict], list[str]]:
+    """
+    In "peers" mode, keeps the companies the LLM judges to build a product like the startup's (searches by
+    category also find companies that only share the customer's industry). Returns (kept, names left out).
+    Competitors on record are never filtered.
+    """
+    if mode != "peers":
+        return peers, []
+    keep = search_terms.similar_companies(
+        s,
+        [
+            {
+                "id": e["id"],
+                "name": e.get("name", ""),
+                "description": (_prop(e, "description") or {}).get("value") or e.get("description"),
+            }
+            for e in peers
+        ],
+    )
+    if keep is None:
+        return peers, []
+    return [e for e in peers if e["id"] in keep], [e.get("name", "") for e in peers if e["id"] not in keep]
+
+
+def _query_rows(client: CalaClient, query: str) -> tuple[list[str], list[dict]]:
+    """(row names, linked company entities) for one knowledge_query; a failed search counts as empty."""
+    try:
+        res = client.knowledge_query(query)
+    except Exception:  # noqa: BLE001 - the other searches still count
+        logger.warning("knowledge_query failed: %s", query, exc_info=True)
+        return [], []
+    rows = list(dict.fromkeys(n for n in map(_row_name, res.get("results") or []) if n))
+    linked = [e for e in res.get("entities") or [] if e.get("entity_type") in COMPANY_TYPES]
+    return rows, linked
+
+
+def _resolve_rows(
+    client: CalaClient, s: Startup, results: list[tuple[list[str], list[dict]]], limit: int
+) -> dict:
+    """
+    Company ids for the rows of several searches, taken in turn from each search (so every angle counts),
+    up to `limit`. Rows are matched to the search's linked entities, else to an exact-name entity search.
+    """
+    me = normalise_name(s.name)
+    picked: list[tuple[int, str]] = []
+    seen: set[str] = {me}
+    for depth in range(max((len(r) for r, _ in results), default=0)):
+        for i, (rows, _) in enumerate(results):
+            if depth < len(rows) and normalise_name(rows[depth]) not in seen:
+                seen.add(normalise_name(rows[depth]))
+                picked.append((i, rows[depth]))
+    picked = picked[: limit * 2]  # some rows have no record; resolve extra and cut to `limit` below
+
+    def resolve(item: tuple[int, str]) -> str | None:
+        i, row = item
         key = normalise_name(row)
-        if key == me:
-            return None
-        for e in linked:
+        for e in results[i][1]:
             if any(normalise_name(n) == key for n in [e.get("name", ""), *(e.get("mentions") or [])]):
                 return e["id"]
         try:
@@ -131,10 +201,14 @@ def find_companies(client: CalaClient, s: Startup) -> dict:
         return next((h["id"] for h in hits if normalise_name(h["name"]) == key), None)
 
     with ThreadPoolExecutor(max_workers=4) as ex:
-        found = list(ex.map(resolve, rows))
-    ids = [i for i in dict.fromkeys(found) if i and i != s.cala_company_id]
-    unresolved = sum(1 for i, r in zip(found, rows, strict=True) if not i and normalise_name(r) != me)
-    return {"mode": mode, "query": query, "ids": ids, "unresolved": unresolved}
+        found = list(ex.map(resolve, picked))
+    ids: list[str] = []
+    per_search = [0] * len(results)
+    for (i, _), cid in zip(picked, found, strict=True):
+        if cid and cid != s.cala_company_id and cid not in ids and len(ids) < limit:
+            ids.append(cid)
+            per_search[i] += 1
+    return {"ids": ids, "unresolved": sum(1 for f in found if not f), "per_search": per_search}
 
 
 def _row_name(row: dict) -> str:
@@ -186,7 +260,9 @@ def build_competitors(s: Startup, client: CalaClient) -> dict:
     }
     ids = ([s.cala_company_id] if s.cala_company_id else []) + found["ids"]
     entities = _parallel(lambda i: _retrieve(client, i, query), ids)
-    rows = _parallel(lambda e: company_row(client, e) if e else None, entities, workers=4)
+    own = [entities.pop(0)] if s.cala_company_id else []
+    peers, left_out = similar_peers(s, found["mode"], [e for e in entities if e])
+    rows = _parallel(lambda e: company_row(client, e) if e else None, own + peers, workers=4)
     you = rows.pop(0) if s.cala_company_id else None
     you = {**(you or own_row(s)), "you": True, "name": s.name}
     companies = [r for r in rows if r]
@@ -204,7 +280,9 @@ def build_competitors(s: Startup, client: CalaClient) -> dict:
     return {
         "mode": found["mode"],
         "query": found["query"],
+        "searches": found["searches"],
         "unresolved": found["unresolved"],
+        "left_out": left_out,
         "you": you,
         "companies": companies,
         "currency": currency,
@@ -450,12 +528,15 @@ def country_of(text: str) -> str | None:
 
 
 def build_investors(s: Startup, client: CalaClient) -> dict:
-    found = find_companies(client, s)
-    query = {"properties": ["name"], "relationships": {"incoming": {"INVESTED_IN": {"limit": 50}}}}
+    found = find_companies(client, s, MAX_INVESTOR_PEERS)
+    query = {
+        "properties": ["name", "description"],
+        "relationships": {"incoming": {"INVESTED_IN": {"limit": 50}}},
+    }
     ids = ([s.cala_company_id] if s.cala_company_id else []) + found["ids"]
     entities = _parallel(lambda i: _retrieve(client, i, query), ids)
     own = entities.pop(0) if s.cala_company_id else None
-    peers = [e for e in entities if e]
+    peers, left_out = similar_peers(s, found["mode"], [e for e in entities if e])
 
     def backers(e):
         return [
@@ -514,8 +595,10 @@ def build_investors(s: Startup, client: CalaClient) -> dict:
     return {
         "mode": found["mode"],
         "query": found["query"],
+        "searches": found["searches"],
         "unresolved": found["unresolved"],
         "peers": [{"id": p["id"], "name": p["name"]} for p in peers],
+        "left_out": left_out,
         "your_stage": STAGE_LABEL.get(my_stage or "", s.stage or None),
         "your_country": my_country,
         "existing": [i for i in investors if i["existing"]],
