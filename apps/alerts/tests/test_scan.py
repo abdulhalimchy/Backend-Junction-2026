@@ -330,3 +330,27 @@ def test_undated_edges_are_looked_up_on_first_scan_and_kept_only_if_recent(user,
 
     assert list(Alert.objects.values_list("title", flat=True)) == ["Tidewise raised €5M (Series a)"]
     assert run(cala).alerts_created == 0  # and the rerun neither repeats it nor surfaces the old one
+
+
+def test_portfolio_companies_and_their_competitors_are_scanned_without_a_watch(cala, user, slush):
+    from apps.accounts.tests.factories import UserFactory
+    from apps.portfolio.models import MonitoredCompetitor, PortfolioCompany
+
+    holder = UserFactory()  # Tidewise is in their portfolio
+    PortfolioCompany.objects.create(user=holder, name="Tidewise", cala_company_id=TIDE)
+    mine = PortfolioCompany.objects.create(user=user, name="Portbotics", cala_company_id=PORT)
+    MonitoredCompetitor.objects.create(user=user, company=mine, cala_id=TIDE, name="Tidewise")
+    PortfolioCompany.objects.create(user=user, name="Draft", cala_company_id=FJORD, is_draft=True)
+
+    assert scan.targets(user) == [("company", TIDE), ("company", PORT)]  # drafts are not scanned
+    run(cala, [("company", TIDE)])
+
+    theirs = {a.kind: a for a in Alert.objects.filter(user=holder)}
+    assert theirs[Alert.Kind.FUNDING_ROUND].reason == "In your portfolio"
+    assert Alert.Kind.SLUSH_ATTENDEE in theirs
+    # The rival's investor hears only about the round, not its Slush attendance.
+    competitor = Alert.objects.get(user=user)
+    assert (competitor.kind, competitor.reason) == (
+        Alert.Kind.PORTFOLIO_COMPETITOR,
+        "Competes with Portbotics",
+    )

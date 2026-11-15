@@ -71,6 +71,20 @@ def test_detail_includes_claims_in_slide_order(auth_client, user):
     assert response.json()["claim_count"] == 2
 
 
+def test_list_counts_claims_by_verdict(auth_client, user):
+    deck = DeckCheckFactory(user=user)
+    DeckClaimFactory(deck_check=deck, status="confirmed")
+    DeckClaimFactory(deck_check=deck, status="confirmed")
+    DeckClaimFactory(deck_check=deck, status="differs")
+    DeckCheckFactory(user=user)  # a second check with no claims must not change the first one's counts
+
+    by_id = {d["id"]: d for d in auth_client.get(LIST_URL).json()["results"]}
+
+    row = by_id[str(deck.pk)]
+    assert (row["confirmed_count"], row["differs_count"], row["cant_verify_count"]) == (2, 1, 0)
+    assert row["claim_count"] == 3
+
+
 def test_deck_checks_are_private(auth_client):
     other = DeckCheckFactory()
 

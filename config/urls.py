@@ -27,6 +27,7 @@ api_v1_patterns = [
     path("markets/", include("apps.markets.api.v1.urls")),
     path("watchlist/", include("apps.watchlist.api.v1.urls")),
     path("startups/", include("apps.startups.api.v1.urls")),
+    path("portfolio/", include("apps.portfolio.api.v1.urls")),
 ]
 
 urlpatterns = [

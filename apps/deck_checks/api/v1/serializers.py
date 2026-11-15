@@ -18,6 +18,9 @@ class DeckCheckSerializer(serializers.ModelSerializer):
     """Summary used in lists. The file itself is never exposed by URL."""
 
     claim_count = serializers.SerializerMethodField()
+    confirmed_count = serializers.SerializerMethodField()
+    differs_count = serializers.SerializerMethodField()
+    cant_verify_count = serializers.SerializerMethodField()
 
     class Meta:
         model = DeckCheck
@@ -32,6 +35,9 @@ class DeckCheckSerializer(serializers.ModelSerializer):
             "status",
             "error",
             "claim_count",
+            "confirmed_count",
+            "differs_count",
+            "cant_verify_count",
             "created_at",
             "checked_at",
         )
@@ -41,6 +47,19 @@ class DeckCheckSerializer(serializers.ModelSerializer):
         # Annotated by the viewset's queryset; fall back to a query for fresh instances.
         annotated = getattr(obj, "claim_count", None)
         return annotated if annotated is not None else obj.claims.count()
+
+    def _status_count(self, obj, value: str) -> int:
+        annotated = getattr(obj, f"{value}_count", None)
+        return annotated if annotated is not None else obj.claims.filter(status=value).count()
+
+    def get_confirmed_count(self, obj) -> int:
+        return self._status_count(obj, DeckClaim.Status.CONFIRMED)
+
+    def get_differs_count(self, obj) -> int:
+        return self._status_count(obj, DeckClaim.Status.DIFFERS)
+
+    def get_cant_verify_count(self, obj) -> int:
+        return self._status_count(obj, DeckClaim.Status.CANT_VERIFY)
 
 
 class DeckCheckDetailSerializer(DeckCheckSerializer):
