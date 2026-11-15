@@ -178,3 +178,40 @@ class TestDeleteAccount:
         assert (
             api_client.post(reverse("v1:accounts:refresh"), {"refresh": tokens["refresh"]}).status_code == 401
         )
+
+
+class TestExportData:
+    url = reverse("v1:accounts:export-data")
+
+    def test_requires_authentication(self, api_client):
+        assert api_client.get(self.url).status_code == 401
+
+    def test_exports_the_account_and_everything_it_owns_but_not_others(
+        self, auth_client, user, tmp_path, settings
+    ):
+        from apps.deck_checks.tests.factories import DeckCheckFactory, DeckClaimFactory
+        from apps.watchlist.tests.factories import WatchItemFactory
+
+        settings.MEDIA_ROOT = tmp_path
+        user.profile.role = "investor"
+        user.profile.goals = ["Source new deals"]
+        user.profile.save()
+        deck = DeckCheckFactory(user=user)
+        DeckClaimFactory(deck_check=deck)
+        WatchItemFactory(user=user)
+        WatchItemFactory()  # someone else's
+
+        response = auth_client.get(self.url)
+
+        assert response.status_code == 200
+        assert "attachment" in response["Content-Disposition"]
+        body = response.json()
+        assert body["account"]["email"] == user.email
+        assert "password" not in body["account"]
+        assert body["accounts.profile"][0]["role"] == "investor"
+        assert body["accounts.profile"][0]["goals"] == ["Source new deals"]
+        assert len(body["watchlist.watchitem"]) == 1
+        [exported_deck] = body["deck_checks.deckcheck"]
+        assert exported_deck["file"] == deck.file.name
+        assert len(exported_deck["deck_checks.deckclaim"]) == 1
+        assert not any(k.startswith("token_blacklist") for k in body)

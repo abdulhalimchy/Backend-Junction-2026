@@ -19,6 +19,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.core.cala import CalaClient, CalaError
+from apps.core.permissions import IsAuthenticatedOrGatewayKey
 
 ENTITY_ID = r"[A-Za-z0-9_.:-]{1,128}"
 ROUTES = [
@@ -47,6 +48,7 @@ def _error(status: int, code: str, message: str) -> Response:
 class CalaGatewayView(APIView):
     """Forwards one allowed Cala request, e.g. POST /api/v1/cala/v1/knowledge/search."""
 
+    permission_classes = [IsAuthenticatedOrGatewayKey]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "cala"
 

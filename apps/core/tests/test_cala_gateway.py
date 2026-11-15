@@ -82,3 +82,19 @@ def test_maps_cala_errors(auth_client, monkeypatch, error, status, code):
     assert res.status_code == status
     assert res.json()["error"]["code"] == code
     assert res.json()["error"]["message"] == str(error)
+
+
+def test_gateway_key_works_without_a_user(api_client, calls, settings):
+    settings.CALA_GATEWAY_KEY = "s3cret"
+    res = api_client.post(
+        url("v1/knowledge/search"), {"input": "x"}, format="json", HTTP_X_GATEWAY_KEY="s3cret"
+    )
+    assert res.status_code == 200
+
+
+@pytest.mark.parametrize(("configured", "sent"), [("s3cret", "wrong"), ("s3cret", ""), ("", "")])
+def test_wrong_or_unset_gateway_key_is_refused(api_client, calls, settings, configured, sent):
+    settings.CALA_GATEWAY_KEY = configured
+    res = api_client.post(url("v1/knowledge/search"), {"input": "x"}, format="json", HTTP_X_GATEWAY_KEY=sent)
+    assert res.status_code in (401, 403)
+    assert calls == []

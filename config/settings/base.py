@@ -217,6 +217,13 @@ CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 # Cala knowledge graph. Sent as the X-API-KEY header; never expose it to clients.
 CALA_API_BASE_URL = env("CALA_API_BASE_URL", default="https://api.cala.ai")
 CALA_API_KEY = env("CALA_API_KEY", default="")
+# Shared secret the Next.js server sends as X-Gateway-Key to use the Cala gateway without a user's token
+# (its Cala cache is shared across users). Empty: only signed-in users can call the gateway.
+CALA_GATEWAY_KEY = env("CALA_GATEWAY_KEY", default="")
+
+# Google sign-in: the OAuth web client ID that Google ID tokens must be issued for (their `aud`).
+# Empty: POST /api/v1/accounts/auth/google/ answers 503.
+GOOGLE_CLIENT_ID = env("GOOGLE_CLIENT_ID", default="")
 
 # Alert scan (apps/alerts/scan.py): funding rounds dated within this many days count as news, including the
 # first time an entity is scanned. Older rounds are history, not alerts.

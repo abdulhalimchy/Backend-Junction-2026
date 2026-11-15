@@ -84,17 +84,26 @@ class AuthResponseSerializer(serializers.Serializer):
     user = UserSerializer()
 
 
+class GoogleSignInSerializer(serializers.Serializer):
+    credential = serializers.CharField(
+        help_text="The ID token from Google Identity Services (its `credential`)."
+    )
+
+
 class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField()
 
 
 class DeleteAccountSerializer(serializers.Serializer):
-    password = serializers.CharField(write_only=True, trim_whitespace=False)
+    """Accounts with a password must send it. Google-only accounts have none, so they send nothing."""
 
-    def validate_password(self, value):
-        if not self.context["request"].user.check_password(value):
-            raise serializers.ValidationError("Password is incorrect.")
-        return value
+    password = serializers.CharField(write_only=True, trim_whitespace=False, required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        user = self.context["request"].user
+        if user.has_usable_password() and not user.check_password(attrs.get("password", "")):
+            raise serializers.ValidationError({"password": ["Password is incorrect."]})
+        return attrs
 
 
 class ChangePasswordSerializer(serializers.Serializer):
