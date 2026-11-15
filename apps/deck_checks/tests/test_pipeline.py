@@ -7,7 +7,7 @@ from apps.deck_checks import llm, pipeline
 from apps.deck_checks.evidence import Evidence, EvidenceBuilder, normalise_name
 from apps.deck_checks.models import DeckCheck
 
-from .factories import DeckCheckFactory
+from .factories import DeckCheckFactory, pdf_upload
 
 pytestmark = pytest.mark.django_db
 
@@ -590,3 +590,76 @@ def test_web_verdict_without_a_real_quote_is_dropped(monkeypatch, settings):
     )
     rows = pipeline.check_pdf(b"%PDF", client=object()).rows
     assert [r["status"] for r in rows] == ["cant_verify", "cant_verify"]
+
+
+def _counting_llm(monkeypatch, verdicts):
+    """Like patch_llm, but each reading of the deck words its claim differently, as a real model does."""
+    calls = {"extract": 0, "verify": 0}
+
+    def extract(pdf):
+        calls["extract"] += 1
+        claim = {"slide": 1, "claim": f"Founded in 2023 (reading {calls['extract']})", "category": "company"}
+        return llm.DeckReading("Northlight Robotics", [], "", [claim])
+
+    def verify(company, claims, evidence):
+        calls["verify"] += 1
+        return verdicts
+
+    monkeypatch.setattr(llm, "extract_claims", extract)
+    monkeypatch.setattr(llm, "verify_claims", verify)
+    return calls
+
+
+CONFIRMED = [{"index": 0, "status": "confirmed", "on_record": "Founded May 2023", "evidence_ids": ["E1"]}]
+
+
+def test_same_file_checked_again_gives_the_same_result(monkeypatch):
+    patch_evidence(monkeypatch, [Evidence("E1", "Founded 2023-05", [SRC])])
+    calls = _counting_llm(monkeypatch, CONFIRMED)
+    first = DeckCheckFactory()
+    pipeline.run_deck_check(first.pk)
+
+    again = DeckCheckFactory(user=first.user)
+    pipeline.run_deck_check(again.pk)
+
+    assert calls == {"extract": 1, "verify": 1}  # neither read nor judged a second time
+    row = lambda d: list(d.claims.values("slide", "claim", "status", "on_record", "sources", "basis"))  # noqa: E731
+    assert row(again) == row(first)
+    assert again.claims.get().claim == "Founded in 2023 (reading 1)"
+    again.refresh_from_db()
+    assert again.status == "completed"
+    assert again.evidence_hash == DeckCheck.objects.get(pk=first.pk).evidence_hash != ""
+
+
+def test_same_file_is_judged_again_when_the_record_changed(monkeypatch):
+    patch_evidence(monkeypatch, [Evidence("E1", "Founded 2023-05", [SRC])])
+    calls = _counting_llm(monkeypatch, CONFIRMED)
+    first = DeckCheckFactory()
+    pipeline.run_deck_check(first.pk)
+
+    patch_evidence(monkeypatch, [Evidence("E1", "Founded 2022-11", [SRC])])
+    again = DeckCheckFactory(user=first.user)
+    pipeline.run_deck_check(again.pk)
+
+    assert calls == {"extract": 1, "verify": 2}  # same claims, fresh verdicts
+    assert again.claims.get().claim == "Founded in 2023 (reading 1)"
+
+
+def test_reuse_window_and_other_files_and_users(monkeypatch, settings):
+    patch_evidence(monkeypatch, [Evidence("E1", "Founded 2023-05", [SRC])])
+    calls = _counting_llm(monkeypatch, CONFIRMED)
+    first = DeckCheckFactory()
+    pipeline.run_deck_check(first.pk)
+
+    pipeline.run_deck_check(DeckCheckFactory().pk)  # another user's upload of the same bytes
+    assert calls == {"extract": 2, "verify": 2}
+
+    other_file = DeckCheckFactory(
+        user=first.user, file=pdf_upload(content=b"%PDF-1.4\n%another deck\n%%EOF\n")
+    )
+    pipeline.run_deck_check(other_file.pk)
+    assert calls == {"extract": 3, "verify": 3}
+
+    settings.DECK_CHECK_REUSE_HOURS = 0  # verdicts are never kept; the reading still is
+    pipeline.run_deck_check(DeckCheckFactory(user=first.user).pk)
+    assert calls == {"extract": 3, "verify": 4}

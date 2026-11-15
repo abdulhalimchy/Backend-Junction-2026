@@ -244,6 +244,9 @@ DECK_CHECK_ASYNC = env.bool("DECK_CHECK_ASYNC", default=True)
 DECK_CHECK_STALE_MINUTES = env.int("DECK_CHECK_STALE_MINUTES", default=20)
 # Second pass: search Cala's sourced documents for each claim the structured record cannot settle.
 DECK_CHECK_WEB_SEARCH = env.bool("DECK_CHECK_WEB_SEARCH", default=True)
+# A re-check of the same PDF keeps the earlier verdicts while the record evidence is unchanged, for this many
+# hours (web sources can change without the record changing). 0 always judges again.
+DECK_CHECK_REUSE_HOURS = env.int("DECK_CHECK_REUSE_HOURS", default=24)
 
 # ---------------------------------------------------------------------------
 # Logging
