@@ -332,3 +332,36 @@ def _dedupe(sources: list[dict]) -> list[dict]:
             seen.add(key)
             out.append(s)
     return out
+
+
+# -- company summary ------------------------------------------------------------------------
+
+COMPANY_SYSTEM = SYSTEM.replace("You are a market analyst", "You are a company analyst")
+COMPANY_SCHEMA = {
+    **SCHEMA,
+    "properties": {k: v for k, v in SCHEMA["properties"].items() if k != "sizes"},
+    "required": ["headline", "bullets", "deals", "insights"],
+}
+
+
+def summarise_company(name: str, place: str, year: int, facts: list[dict]) -> dict:
+    """Same rules and checks as the market summary, for one company (P = profile, D = news, C = competitors)."""
+    lines = "\n".join(f"[{f['id']}] {' '.join(f['text'].split())}" for f in facts)
+    prompt = f"""Company: {name}
+Competitors looked up in: {place}
+Current year: {year}
+
+Facts (P = the company's own record, D = recent news and deals, C = competitors):
+{lines}
+
+Write:
+1. headline: one sentence on where this company stands (stage, funding, momentum), with fact ids.
+2. bullets: 3 to 5 key takeaways for a founder competing with it or an investor looking at it, each with fact ids.
+3. deals: every funding round, grant, acquisition, merger or IPO in the D facts involving this company, newest first,
+   at most 15. For each: company (the one raising or being acquired), type, stage if stated, amount and scale and
+   currency (ISO code) only if the fact states them, date as "YYYY", "YYYY-MM" or "YYYY-MM-DD", counterparty (lead
+   investors, or the buyer), quote (copied word for word from the fact), and factId.
+4. insights: up to 6 trends, opportunities or risks for this company, each with a short title, one or two
+   sentences, and fact ids."""
+    data, usage = generate_json(COMPANY_SYSTEM, prompt, COMPANY_SCHEMA)
+    return {**check(data, facts), "model": model(), "tokens": usage.as_dict()}

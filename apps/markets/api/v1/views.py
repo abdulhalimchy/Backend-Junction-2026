@@ -6,18 +6,20 @@ from rest_framework.exceptions import APIException
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.core.cala import is_configured
-from apps.markets import analysis, guard, summary
+from apps.core.cala import CalaClient, CalaError, is_configured
+from apps.markets import analysis, company, guard, summary
 from apps.markets.llm import LLMError
 from apps.markets.models import MarketAnalysis
 from apps.markets.planner import complete_plan
 
 from .serializers import (
+    FindCompanySerializer,
     GuardRequestSerializer,
     GuardResponseSerializer,
     MarketAnalysisListSerializer,
     MarketAnalysisSerializer,
     OpenAnalysisSerializer,
+    OpenCompanySerializer,
     SummaryRequestSerializer,
 )
 
@@ -155,3 +157,67 @@ class MarketAnalysisRefreshView(APIView):
         _need_cala()
         result = analysis.start(get_object_or_404(_analyses(request), pk=pk))
         return Response(MarketAnalysisSerializer(result).data, status=status.HTTP_202_ACCEPTED)
+
+
+class CalaFailed(APIException):
+    status_code = 502
+    default_code = "upstream"
+    default_detail = "The data source could not answer."
+
+
+def _cala_failed(exc: CalaError) -> APIException:
+    status_by_kind = {"missing_key": 503, "no_credit": 402, "rate_limited": 429, "invalid_request": 422}
+    err = CalaFailed(str(exc), code=exc.kind)
+    err.status_code = status_by_kind.get(exc.kind, 502)
+    return err
+
+
+@extend_schema(tags=["markets"], request=FindCompanySerializer, responses={200: dict})
+class FindCompanyView(APIView):
+    """
+    Free text to company records. The LLM reads the text first (which company, what it does, any place for
+    competitors); text that is not a company gets suggestions and spends no Cala credit unless force is set.
+    Otherwise the name goes to Cala's entity search, and the matches are returned for the user to pick one.
+    """
+
+    def post(self, request):
+        s = FindCompanySerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        text = " ".join(s.validated_data["text"].split())
+        read = analysis.read_company_text(text)
+        verdict = {k: read[k] for k in ("kind", "reason", "suggestions", "name", "hint", "place")}
+        if read["kind"] != "company" and not s.validated_data["force"]:
+            return Response({"verdict": verdict, "candidates": []})
+        _need_cala()
+        try:
+            candidates = company.find_candidates(CalaClient(), read["name"] or text)
+        except CalaError as exc:
+            raise _cala_failed(exc) from exc
+        return Response({"verdict": verdict, "candidates": candidates})
+
+
+@extend_schema(tags=["markets"], request=OpenCompanySerializer, responses={200: MarketAnalysisSerializer})
+class OpenCompanyView(APIView):
+    """
+    Open the analysis of a picked company: stored in the history like a market report, started if it never
+    ran (poll the detail while status is "loading"; refresh, cancel and delete work the same way).
+    """
+
+    def post(self, request):
+        s = OpenCompanySerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        d = dict(s.validated_data)
+        _need_cala()
+        if not d["name"]:
+            # Old links carry only the entity id: read the name and description from its record.
+            try:
+                e = CalaClient().retrieve_entity(d["entity_id"])
+            except CalaError as exc:
+                raise _cala_failed(exc) from exc
+            d["name"] = str(e.get("name") or "")[:200]
+            desc = (e.get("properties") or {}).get("description")
+            d["description"] = str((desc or {}).get("value") if isinstance(desc, dict) else desc or "")[:500]
+        read = analysis.read_company_text(d["text"]) if d["text"] else company.place_fields({}, d["name"])
+        plan = company.company_plan(read, d["entity_id"], d["name"], d["description"], timezone.now().year)
+        result = analysis.open_company(request.user, plan, typed=d["text"])
+        return Response(MarketAnalysisSerializer(result).data)

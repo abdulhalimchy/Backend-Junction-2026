@@ -51,10 +51,28 @@ class OpenAnalysisSerializer(serializers.Serializer):
     force = serializers.BooleanField(default=False)
 
 
+class FindCompanySerializer(serializers.Serializer):
+    """Free text naming a company ("orange telecom", "Spotify competitors in Europe")."""
+
+    text = serializers.CharField(max_length=300, trim_whitespace=True)
+    force = serializers.BooleanField(default=False)
+
+
+class OpenCompanySerializer(serializers.Serializer):
+    """The company the user picked from the candidates, and the text they searched (for the place)."""
+
+    entity_id = serializers.RegexField(r"^[0-9a-fA-F-]{36}$")
+    name = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+    description = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+    text = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
+
+
 class MarketAnalysisListSerializer(serializers.Serializer):
     """One history row: enough to list it without the full report."""
 
     id = serializers.UUIDField()
+    kind = serializers.CharField()
+    entity_id = serializers.CharField()
     sector = serializers.CharField()
     typed = serializers.CharField()
     region = serializers.CharField()

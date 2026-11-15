@@ -25,7 +25,7 @@ from django.utils import timezone
 
 from apps.core.cala import CalaClient, CalaError
 
-from . import planner, report, summary
+from . import company, planner, report, summary
 from .llm import LLMError
 from .models import MarketAnalysis
 
@@ -52,7 +52,9 @@ PRESET_MARKETS = [
 
 
 def known_markets(user) -> list[str]:
-    names = MarketAnalysis.objects.filter(user=user).values_list("sector", flat=True)
+    names = MarketAnalysis.objects.filter(user=user, kind=MarketAnalysis.Kind.MARKET).values_list(
+        "sector", flat=True
+    )
     return list(dict.fromkeys([*PRESET_MARKETS, *names]))[-120:]
 
 
@@ -95,10 +97,43 @@ def legacy_plan(result: MarketAnalysis) -> dict:
 # -- running ---------------------------------------------------------------------------
 
 
+def open_company(user, plan: dict, typed: str = "") -> MarketAnalysis:
+    """The stored analysis of this company (and competitor place), started if it never ran or failed."""
+    result, created = MarketAnalysis.objects.get_or_create(
+        user=user,
+        kind=MarketAnalysis.Kind.COMPANY,
+        entity_id=plan["entity_id"],
+        sector=plan["market"][:120],
+        region=plan["place"].lower(),
+        defaults={"year": timezone.now().year, "typed": typed[:300], "title": plan["title"], "plan": plan},
+    )
+    if created or result.status == MarketAnalysis.Status.FAILED or not result.data:
+        start(result)
+    else:
+        result.save(update_fields=["updated_at"])
+    return result
+
+
+def read_company_text(text: str) -> dict:
+    """The LLM's reading of company search text, cached for a day; if the LLM is unavailable, the text is the name."""
+    key = "company-find:v1:" + hashlib.sha256(report.normalise_sector(text).encode()).hexdigest()[:32]
+    if hit := cache.get(key):
+        return hit
+    try:
+        read = company.read_text(text)
+    except LLMError as exc:
+        logger.warning("Company search reading skipped: %s", exc)
+        return {"kind": "company", "reason": "", "suggestions": [], **company.place_fields({}, text)}
+    cache.set(key, read, 24 * 3600)
+    return read
+
+
 def open_analysis(user, plan: dict, typed: str = "", refresh: bool = False) -> MarketAnalysis:
     """The stored analysis for this market and place, started if it never ran (or failed), or re-run on refresh."""
     result, created = MarketAnalysis.objects.get_or_create(
         user=user,
+        kind=MarketAnalysis.Kind.MARKET,
+        entity_id="",
         sector=plan["market"],
         region=plan["place"].lower(),
         defaults={
@@ -206,6 +241,8 @@ def run(analysis_id, run_no: int | None = None) -> None:
         return
     run_no = run_no or result.runs
     plan = result.plan or legacy_plan(result)
+    is_company = result.kind == MarketAnalysis.Kind.COMPANY
+    sections = company.SECTIONS if is_company else SECTIONS
     previous = dict((result.backup or {}).get("data") or result.data or {})
     data = {
         **previous,
@@ -231,32 +268,33 @@ def run(analysis_id, run_no: int | None = None) -> None:
 
     def ask(name: str) -> dict:
         # Worker threads only call Cala; every database write happens on this run's own thread.
-        return {**SECTIONS[name](client, plan), "fetched_at": _now_ms()}
+        return {**sections[name](client, plan), "fetched_at": _now_ms()}
 
-    ex = ThreadPoolExecutor(max_workers=len(SECTIONS))
+    ex = ThreadPoolExecutor(max_workers=len(sections))
     try:
-        pending = {ex.submit(ask, name): name for name in SECTIONS}
+        pending = {ex.submit(ask, name): name for name in sections}
         for done in as_completed(pending):
             name = pending[done]
             try:
                 data[name] = done.result()
             except Exception as exc:  # noqa: BLE001 - one failed section is shown as such; the rest still render
-                logger.warning("Market section %s failed for %s", name, analysis_id, exc_info=True)
+                logger.warning("Analysis section %s failed for %s", name, analysis_id, exc_info=True)
                 data["errors"][name] = _error(exc)
                 data.pop(name, None)
             save()  # each section is stored as soon as it arrives, so the page can show progress
 
-        facts = summary_facts(data)
+        facts = company.summary_facts(data) if is_company else summary_facts(data)
         if not facts:
             data.pop("summary", None)
             data["errors"]["summary"] = {
-                "message": "No verified facts were found for this market, so there is nothing to summarise.",
+                "message": "No verified facts were found, so there is nothing to summarise.",
                 "kind": "upstream",
             }
         else:
+            write = summary.summarise_company if is_company else summary.summarise
             try:
                 data["summary"] = {
-                    **summary.summarise(result.sector, plan["place"], result.year, facts),
+                    **write(result.sector, plan["place"], result.year, facts),
                     "fetched_at": _now_ms(),
                 }
             except Exception as exc:  # noqa: BLE001
@@ -264,16 +302,19 @@ def run(analysis_id, run_no: int | None = None) -> None:
                 data.pop("summary", None)
                 data["errors"]["summary"] = _error(exc)
 
-        failed = all(k in data["errors"] for k in SECTIONS)
+        # A company without its own record has nothing to show; a market fails only if every section did.
+        failed = "profile" in data["errors"] if is_company else all(k in data["errors"] for k in sections)
+        first = next(iter(data["errors"].values()), {}) if failed else {}
+        changes = (company.diff if is_company else diff)(previous, data) if previous.get("query") else []
         save(
             status=MarketAnalysis.Status.FAILED if failed else MarketAnalysis.Status.READY,
-            error=data["errors"].get("size", {}).get("message", "") if failed else "",
-            changes=diff(previous, data) if previous.get("query") else [],
+            error=(data["errors"].get("profile") or first).get("message", "") if failed else "",
+            changes=changes,
             finished_at=timezone.now(),
             backup={},
         )
     except RunStoppedError:
-        logger.info("Market analysis %s run %s was stopped; its results are discarded", analysis_id, run_no)
+        logger.info("Analysis %s run %s was stopped; its results are discarded", analysis_id, run_no)
     finally:
         # Requests still waiting are dropped; ones already sent finish in the background and are ignored.
         ex.shutdown(wait=False, cancel_futures=True)
