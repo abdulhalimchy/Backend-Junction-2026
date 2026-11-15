@@ -41,9 +41,22 @@ class DeckCheck(BaseModel):
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True)
     error = models.TextField(blank=True)
     checked_at = models.DateTimeField(null=True, blank=True)
+    # What makes a re-check of the same PDF repeatable (see pipeline._run).
+    file_sha256 = models.CharField(max_length=64, blank=True, help_text="SHA-256 of the uploaded PDF.")
+    reading = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="The claims the model read from the deck, reused when the same file is checked again.",
+    )
+    evidence_hash = models.CharField(
+        max_length=64, blank=True, help_text="Fingerprint of the record evidence the verdicts were judged on."
+    )
 
     class Meta(BaseModel.Meta):
-        indexes = [models.Index(fields=("user", "created_at"))]
+        indexes = [
+            models.Index(fields=("user", "created_at")),
+            models.Index(fields=("user", "file_sha256"), name="deck_user_sha_idx"),
+        ]
 
     def __str__(self):
         return self.file_name

@@ -88,3 +88,26 @@ def test_refresh_needs_cala_and_own_company(auth_client, user, settings, cala_on
     assert auth_client.post(REFRESH_URL, {"company": str(other.pk)}, format="json").status_code == 404
     settings.CALA_API_KEY = ""
     assert auth_client.post(REFRESH_URL, {}, format="json").status_code == 503
+
+
+def test_status_is_cheap_and_expires_dead_runs(auth_client, user):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    acme = PortfolioCompany.objects.create(user=user, name="Acme", cala_company_id=ACME_ID)
+    url = reverse("v1:portfolio:portfolio-company-analyses-status")
+    first = auth_client.get(url).json()
+    assert (first["loading"], first["enriching"]) == (0, 0)
+
+    fresh = analysis.mark_loading(acme, "rounds")
+    dead = analysis.mark_loading(acme, "competitors")
+    PortfolioAnalysis.objects.filter(pk=dead.pk).update(started_at=timezone.now() - timedelta(minutes=6))
+    body = auth_client.get(url).json()
+    assert body["loading"] == 1  # the dead run no longer counts
+    dead.refresh_from_db()
+    assert (dead.status, dead.error) == ("failed", analysis.INTERRUPTED)
+    assert body["version"] != first["version"]
+
+    analysis.run(fresh.pk)
+    assert auth_client.get(url).json()["loading"] == 0

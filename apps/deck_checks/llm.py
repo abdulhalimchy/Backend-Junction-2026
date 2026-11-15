@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import anthropic
 from django.conf import settings
@@ -179,6 +180,30 @@ class DeckReading:
     @property
     def names(self) -> list[str]:
         return [self.company_name, *self.other_names]
+
+    def to_json(self) -> dict:
+        """Stored on the deck check so the same file is not read twice (two readings never match exactly)."""
+        return {"key": reading_key(), **asdict(self)}
+
+    @classmethod
+    def from_json(cls, data: dict) -> DeckReading:
+        return cls(**{k: v for k, v in data.items() if k != "key"})
+
+
+def _fingerprint(*parts: str) -> str:
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:16]
+
+
+def reading_key() -> str:
+    """Changes whenever a stored reading would no longer match a fresh one: another model or another prompt."""
+    return _fingerprint(
+        settings.DECK_CHECK_LLM_PROVIDER, _model(), EXTRACT_SYSTEM, json.dumps(EXTRACT_TOOL, sort_keys=True)
+    )
+
+
+def verdict_key() -> str:
+    """The same for stored verdicts: the model and both verification prompts."""
+    return _fingerprint(settings.DECK_CHECK_LLM_PROVIDER, _model(), VERIFY_SYSTEM, VERIFY_WEB_SYSTEM)
 
 
 def extract_claims(pdf_bytes: bytes) -> DeckReading:

@@ -1,6 +1,6 @@
 import uuid
 
-from django.db.models import Count
+from django.db.models import Count, Q
 from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
@@ -9,7 +9,7 @@ from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.response import Response
 
 from apps.deck_checks import services
-from apps.deck_checks.models import DeckCheck
+from apps.deck_checks.models import DeckCheck, DeckClaim
 
 from .serializers import DeckCheckDetailSerializer, DeckCheckSerializer, DeckCheckUploadSerializer
 
@@ -35,7 +35,14 @@ class DeckCheckViewSet(
         qs = (
             DeckCheck.objects.filter(user=self.request.user)
             .filter(**self._startup_filter())
-            .annotate(claim_count=Count("claims"))
+            .annotate(
+                claim_count=Count("claims"),
+                # Per-verdict counts, so a history list can show each check's outcome without its claims.
+                **{
+                    f"{value}_count": Count("claims", filter=Q(claims__status=value))
+                    for value in DeckClaim.Status.values
+                },
+            )
             .order_by("-created_at")
         )
         if self.action == "retrieve":
