@@ -14,4 +14,5 @@ urlpatterns = [
     path("me/", views.MeView.as_view(), name="me"),
     path("me/profile/", views.MyProfileView.as_view(), name="me-profile"),
     path("me/change-password/", views.ChangePasswordView.as_view(), name="change-password"),
+    path("me/delete/", views.DeleteAccountView.as_view(), name="delete-account"),
 ]

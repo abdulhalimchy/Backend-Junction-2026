@@ -14,6 +14,7 @@ from apps.accounts.models import User
 from .serializers import (
     AuthResponseSerializer,
     ChangePasswordSerializer,
+    DeleteAccountSerializer,
     LoginSerializer,
     LogoutSerializer,
     ProfileSerializer,
@@ -107,4 +108,18 @@ class ChangePasswordView(APIView):
         serializer = ChangePasswordSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         services.change_password(user=request.user, new_password=serializer.validated_data["new_password"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(tags=["me"])
+class DeleteAccountView(APIView):
+    """Permanently deletes the signed-in user and all their data. Needs the password; cannot be undone."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request=DeleteAccountSerializer, responses={204: None})
+    def post(self, request):
+        serializer = DeleteAccountSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        services.delete_account(user=request.user)
         return Response(status=status.HTTP_204_NO_CONTENT)
