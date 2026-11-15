@@ -24,7 +24,7 @@ python manage.py runserver
 
 - API: http://localhost:8000/api/v1/
 - Docs: http://localhost:8000/api/docs/
-- Admin: http://localhost:8000/admin/
+- Admin: http://localhost:8000/warmline-admin/
 
 ## Project layout
 
