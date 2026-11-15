@@ -240,3 +240,4 @@ gunicorn config.wsgi:application
   or check `GET /api/v1/alerts/schedule/` (`last_nightly`).
 
 Uploaded files are only served by Django in development. Before production, move media to private object storage (for example S3 via `django-storages`) and serve decks through short-lived signed URLs.
+ 
