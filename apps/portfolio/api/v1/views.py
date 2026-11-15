@@ -9,6 +9,7 @@ from apps.portfolio.models import PortfolioAnalysis, PortfolioCompany
 
 from .serializers import (
     AnalysesRefreshSerializer,
+    AnalysesStatusSerializer,
     DismissSerializer,
     FundSerializer,
     PortfolioAnalysisSerializer,
@@ -117,9 +118,18 @@ class PortfolioCompanyViewSet(viewsets.ModelViewSet):
     @extend_schema(responses={200: PortfolioAnalysisSerializer(many=True)})
     @action(detail=False, methods=["get"])
     def analyses(self, request):
-        """Every stored analysis for the user's portfolio. Poll while any `status` is "loading"."""
+        """Every stored analysis for the user's portfolio. To wait for runs, poll analyses/status/ instead:
+        this response carries every result and is large."""
+        analysis.expire_stale(request.user)
         qs = PortfolioAnalysis.objects.filter(company__user=request.user, company__is_draft=False)
         return Response(PortfolioAnalysisSerializer(qs, many=True).data)
+
+    @extend_schema(responses={200: AnalysesStatusSerializer})
+    @action(detail=False, methods=["get"], url_path="analyses/status")
+    def analyses_status(self, request):
+        """Cheap to poll: how many analyses and profile lookups are still running, and a `version` that
+        changes whenever one finishes. Runs stuck past 5 minutes (server restarted) are marked failed."""
+        return Response(analysis.status(request.user))
 
     @extend_schema(request=AnalysesRefreshSerializer, responses={202: PortfolioAnalysisSerializer(many=True)})
     @action(detail=False, methods=["post"], url_path="analyses/refresh")

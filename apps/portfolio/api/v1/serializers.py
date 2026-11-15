@@ -169,3 +169,9 @@ class AnalysesRefreshSerializer(serializers.Serializer):
         allow_empty=False,
     )
     company = serializers.UUIDField(required=False, allow_null=True, default=None)
+
+
+class AnalysesStatusSerializer(serializers.Serializer):
+    loading = serializers.IntegerField()
+    enriching = serializers.IntegerField()
+    version = serializers.DateTimeField(allow_null=True)

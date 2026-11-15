@@ -57,6 +57,50 @@ def can_run(company: PortfolioCompany, kind: str) -> bool:
 # -- running ----------------------------------------------------------------------
 
 
+INTERRUPTED = "The lookup was interrupted. Refresh to run it again."
+
+
+def expire_stale(user) -> int:
+    """Mark runs that have been "loading" longer than STALE_RUN as failed. Their thread died (a server
+    restart), so they would never finish and the page would wait on them forever."""
+    stale = PortfolioAnalysis.objects.filter(
+        company__user=user,
+        status=PortfolioAnalysis.Status.LOADING,
+        started_at__lt=timezone.now() - STALE_RUN,
+    )
+    # Read first: this runs on every poll, and a write would contend (SQLite locks) with running analyses.
+    ids = list(stale.values_list("pk", flat=True))
+    if not ids:
+        return 0
+    return PortfolioAnalysis.objects.filter(pk__in=ids, status=PortfolioAnalysis.Status.LOADING).update(
+        status=PortfolioAnalysis.Status.FAILED, error=INTERRUPTED, updated_at=timezone.now()
+    )
+
+
+def status(user) -> dict:
+    """What the page polls while work runs: counts still in progress, and a version that changes whenever
+    an analysis or a profile lookup finishes (so the page reloads its data only then)."""
+    from django.db.models import Max
+
+    expire_stale(user)
+    analyses = PortfolioAnalysis.objects.filter(company__user=user, company__is_draft=False)
+    companies = PortfolioCompany.objects.filter(user=user, is_draft=False)
+    newest = [
+        analyses.aggregate(v=Max("updated_at"))["v"],
+        companies.aggregate(v=Max("updated_at"))["v"],
+    ]
+    return {
+        "loading": analyses.filter(status=PortfolioAnalysis.Status.LOADING).count(),
+        "enriching": companies.filter(
+            enrichment_status__in=[
+                PortfolioCompany.Enrichment.PENDING,
+                PortfolioCompany.Enrichment.PROCESSING,
+            ]
+        ).count(),
+        "version": max((v for v in newest if v), default=None),
+    }
+
+
 def mark_loading(company: PortfolioCompany, kind: str) -> PortfolioAnalysis | None:
     """Mark the analysis as loading, or None when a run is already in progress."""
     result, _ = PortfolioAnalysis.objects.get_or_create(company=company, kind=kind)
