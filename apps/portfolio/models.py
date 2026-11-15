@@ -121,3 +121,60 @@ class DismissedSuggestion(BaseModel):
 
     def __str__(self):
         return self.name or self.cala_company_id
+
+
+class PortfolioAnalysis(BaseModel):
+    """A stored Cala analysis for one portfolio company, refreshed on request.
+
+    rounds:      the company's recent funding rounds and money raised, to show what happened since the
+                 investor came in.
+    competitors: the companies Cala records as its competitors (or like it), with their latest rounds.
+                 Saving one also refreshes the company's `MonitoredCompetitor` rows for the alert scan.
+    investors:   investors in companies like it, scored as candidates to lead its next round.
+    """
+
+    class Kind(models.TextChoices):
+        ROUNDS = "rounds", "Funding since you invested"
+        COMPETITORS = "competitors", "Competitors"
+        INVESTORS = "investors", "Next-round investors"
+
+    class Status(models.TextChoices):
+        LOADING = "loading", "Loading"
+        READY = "ready", "Ready"
+        FAILED = "failed", "Failed"
+
+    company = models.ForeignKey(PortfolioCompany, on_delete=models.CASCADE, related_name="analyses")
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.LOADING)
+    data = models.JSONField(default=dict, blank=True, help_text="The last completed result.")
+    error = models.TextField(blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True, help_text="When `data` was computed.")
+
+    class Meta(BaseModel.Meta):
+        constraints = [
+            models.UniqueConstraint(fields=("company", "kind"), name="unique_portfolio_analysis_kind")
+        ]
+
+    def __str__(self):
+        return f"{self.company} · {self.kind}"
+
+
+class MonitoredCompetitor(BaseModel):
+    """A competitor of a portfolio company, from its last competitors analysis. The alert scan checks these
+    and tells the investor when one raises a round."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="monitored_competitors"
+    )
+    company = models.ForeignKey(PortfolioCompany, on_delete=models.CASCADE, related_name="competitors")
+    cala_id = models.CharField(max_length=128, db_index=True)
+    name = models.CharField(max_length=255, blank=True)
+
+    class Meta(BaseModel.Meta):
+        constraints = [
+            models.UniqueConstraint(fields=("company", "cala_id"), name="unique_monitored_competitor")
+        ]
+
+    def __str__(self):
+        return f"{self.name or self.cala_id} (vs {self.company})"

@@ -2,7 +2,7 @@ import re
 
 from rest_framework import serializers
 
-from apps.portfolio.models import PortfolioCompany
+from apps.portfolio.models import PortfolioAnalysis, PortfolioCompany
 from apps.startups.api.v1.serializers import clean_domain
 
 DATE_RE = re.compile(r"\d{4}(-\d{2}(-\d{2})?)?")
@@ -150,3 +150,22 @@ class SuggestionsSerializer(serializers.Serializer):
     fund = serializers.DictField(allow_null=True)
     results = SuggestionSerializer(many=True)
     capped = serializers.BooleanField(required=False)
+
+
+class PortfolioAnalysisSerializer(serializers.ModelSerializer):
+    company = serializers.UUIDField(source="company_id", read_only=True)
+
+    class Meta:
+        model = PortfolioAnalysis
+        fields = ("company", "kind", "status", "data", "error", "started_at", "finished_at")
+        read_only_fields = fields
+
+
+class AnalysesRefreshSerializer(serializers.Serializer):
+    kinds = serializers.ListField(
+        child=serializers.ChoiceField(choices=PortfolioAnalysis.Kind.choices),
+        required=False,
+        default=list(PortfolioAnalysis.Kind.values),
+        allow_empty=False,
+    )
+    company = serializers.UUIDField(required=False, allow_null=True, default=None)

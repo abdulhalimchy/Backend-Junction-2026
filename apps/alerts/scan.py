@@ -1,6 +1,7 @@
 """The alert scan: checks watched Cala entities for changes and writes sourced alerts for their watchers.
 
-For each distinct entity on any watch list (plus every founder's own company):
+For each distinct entity on any watch list (plus every founder's own company, every investor's portfolio
+companies and the competitors found for them):
 
 1. One Cala lookup collects the facts we track: funding rounds, investments, portfolio, event attendance
    and headcount.
@@ -35,6 +36,7 @@ from django.utils import timezone
 from apps.accounts.models import Profile
 from apps.core.cala import CalaClient, CalaError, to_sources
 from apps.events.models import Event
+from apps.portfolio.models import MonitoredCompetitor, PortfolioCompany
 from apps.watchlist.models import WatchItem
 
 from .models import Alert, EntitySnapshot, ScanRun
@@ -83,6 +85,7 @@ REASONS = {
     WatchItem.Tag.PASSED: "A company you passed on",
 }
 OWN_COMPANY = "Your company"
+IN_PORTFOLIO = "In your portfolio"
 
 
 # -- results ---------------------------------------------------------------------------------------------
@@ -121,16 +124,22 @@ class ScanResult:
 
 
 def targets(user=None) -> list[tuple[str, str]]:
-    """(entity_type, cala_id) pairs to scan: watched companies and investors, plus founders' own companies.
+    """(entity_type, cala_id) pairs to scan: watched companies and investors, founders' own companies,
+    and investors' portfolio companies with their monitored competitors.
 
     With `user`, only that user's entities (their alerts still go to everyone watching them).
     """
     items = WatchItem.objects.filter(entity_type__in=QUERIES)
     profiles = Profile.objects.exclude(cala_company_id="")
+    portfolio = PortfolioCompany.objects.filter(is_draft=False).exclude(cala_company_id="")
+    competitors = MonitoredCompetitor.objects.filter(company__is_draft=False)
     if user is not None:
         items, profiles = items.filter(user=user), profiles.filter(user=user)
+        portfolio, competitors = portfolio.filter(user=user), competitors.filter(user=user)
     pairs = set(items.values_list("entity_type", "cala_id"))
     pairs |= {("company", cid) for cid in profiles.values_list("cala_company_id", flat=True)}
+    pairs |= {("company", cid) for cid in portfolio.values_list("cala_company_id", flat=True)}
+    pairs |= {("company", cid) for cid in competitors.values_list("cala_id", flat=True)}
     return sorted(pairs)
 
 
@@ -462,6 +471,18 @@ def fan_out(entity_type: str, cala_id: str, changes: list[Change]) -> int:
         if entity_type == "company"
         else set()
     )
+    # Investors holding the company in their portfolio, or monitoring it as a portfolio company's competitor.
+    portfolio: dict = {}
+    monitors: dict = {}
+    if entity_type == "company":
+        for uid, name in PortfolioCompany.objects.filter(cala_company_id=cala_id, is_draft=False).values_list(
+            "user_id", "name"
+        ):
+            portfolio.setdefault(uid, []).append(name)
+        for uid, name in MonitoredCompetitor.objects.filter(
+            cala_id=cala_id, company__is_draft=False
+        ).values_list("user_id", "company__name"):
+            monitors.setdefault(uid, []).append(name)
     # What each watcher watches, to explain an investor's deal ("Backs X, one of your competitors").
     related = {c.related_id for c in changes if c.related_id}
     watched_related: dict[tuple, WatchItem] = {
@@ -469,11 +490,20 @@ def fan_out(entity_type: str, cala_id: str, changes: list[Change]) -> int:
     }
 
     created = 0
-    for user_id in watchers.keys() | owners:
+    for user_id in watchers.keys() | owners | portfolio.keys() | monitors.keys():
         own = user_id in owners
         item = watchers.get(user_id)
         for c in changes:
-            kind, reason = _kind_and_reason(c, own, item, watched_related.get((user_id, c.related_id)))
+            if own or item:
+                kind, reason = _kind_and_reason(c, own, item, watched_related.get((user_id, c.related_id)))
+            elif user_id in portfolio:
+                kind, reason = _kind_and_reason(c, False, None, None)[0], IN_PORTFOLIO
+            elif c.category == "round":  # only a competitor's rounds are news to its rival's investor
+                names = sorted(set(monitors[user_id]))
+                more = f" +{len(names) - 2}" if len(names) > 2 else ""
+                kind, reason = Alert.Kind.PORTFOLIO_COMPETITOR, f"Competes with {', '.join(names[:2])}{more}"
+            else:
+                continue
             try:
                 with transaction.atomic():
                     _, new = Alert.objects.get_or_create(

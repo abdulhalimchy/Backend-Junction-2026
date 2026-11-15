@@ -113,8 +113,7 @@ def test_lookup_draft_then_save_keeps_sources_for_unedited(auth_client, lookup, 
     ).json()
     assert saved["is_draft"] is False
     assert set(saved["sources"]) == {"name"}  # headquarters was edited
-    watch = WatchItem.objects.get(user=user, cala_id=ACME_ID)
-    assert watch.tag == WatchItem.Tag.PORTFOLIO
+    assert not WatchItem.objects.filter(user=user).exists()  # the watch list holds only what the user adds
 
 
 def test_quick_add_fills_empty_fields(auth_client, lookup, user):
@@ -125,7 +124,7 @@ def test_quick_add_fills_empty_fields(auth_client, lookup, user):
     assert not c.is_draft and c.origin == "cala"
     assert c.name == "Acme"  # kept as given
     assert c.headquarters == "Oslo, Norway" and "headquarters" in c.sources
-    assert WatchItem.objects.filter(user=user, cala_id=ACME_ID, tag="portfolio").exists()
+    assert not WatchItem.objects.filter(user=user).exists()
     # Adding it again is refused.
     again = auth_client.post(LOOKUP_URL, {"cala_id": ACME_ID, "name": "Acme", "quick": True}, format="json")
     assert again.status_code == 409
@@ -147,16 +146,11 @@ def test_suggestions_exclude_added_and_dismissed(auth_client, cala, user):
     assert auth_client.put(FUND_URL, {"cala_id": None}, format="json").json()["fund"] is None
 
 
-def test_delete_removes_portfolio_watch_only(auth_client, user):
+def test_delete_leaves_the_watch_list_alone(auth_client, user):
     c = PortfolioCompany.objects.create(user=user, name="Acme", cala_company_id=ACME_ID)
-    services.sync_watch(c)
+    WatchItem.objects.create(user=user, entity_type="company", cala_id=ACME_ID, tag="pipeline")
     assert auth_client.delete(detail_url(c.pk)).status_code == 204
-    assert not WatchItem.objects.filter(user=user, cala_id=ACME_ID).exists()
-
-    other = PortfolioCompany.objects.create(user=user, name="Beta", cala_company_id=BETA_ID)
-    WatchItem.objects.create(user=user, entity_type="company", cala_id=BETA_ID, tag="competitor")
-    services.sync_watch(other)  # re-tagged as portfolio
-    assert WatchItem.objects.get(user=user, cala_id=BETA_ID).tag == "portfolio"
+    assert WatchItem.objects.filter(user=user, cala_id=ACME_ID).exists()
 
 
 def test_private_to_owner(auth_client):
