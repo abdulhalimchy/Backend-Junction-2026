@@ -1,0 +1,94 @@
+# Warmline backend in production.
+#
+#   cp .env.production.example .env      # fill in secrets and your domain
+#   docker compose up -d --build                         # API on 127.0.0.1:8000, for your own nginx/Caddy
+#   docker compose --profile https up -d --build         # or: also run Caddy with automatic HTTPS on 80/443
+#
+# Services: db (PostgreSQL), web (gunicorn; applies migrations on start), scheduler (nightly alert scan),
+# caddy (optional reverse proxy with Let's Encrypt certificates).
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app-env: &app-env
+  # Built here so the password lives in one place (.env). Use a URL-safe password, e.g. `openssl rand -hex 24`.
+  DATABASE_URL: postgres://${POSTGRES_USER:-warmline}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-warmline}
+
+x-app: &app
+  build:
+    context: .
+    target: runtime
+  image: warmline-backend:latest
+  env_file: .env
+  environment: *app-env
+  restart: unless-stopped
+  logging: *logging
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-warmline}
+      POSTGRES_USER: ${POSTGRES_USER:-warmline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    <<: *app
+    environment:
+      <<: *app-env
+      RUN_MIGRATIONS: "1"
+    volumes:
+      - media:/app/media
+    ports:
+      # Localhost only: put a reverse proxy (yours, or the caddy service below) in front for HTTPS.
+      - "127.0.0.1:${WEB_PORT:-8000}:8000"
+
+  scheduler:
+    <<: *app
+    command: ["python", "manage.py", "run_alert_scheduler"]
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+      web:
+        condition: service_healthy # migrations are applied by web first
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env to use the https profile}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+volumes:
+  postgres_data:
+  media:
+  caddy_data:
+  caddy_config:
