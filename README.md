@@ -24,7 +24,7 @@ python manage.py runserver
 
 - API: http://localhost:8000/api/v1/
 - Docs: http://localhost:8000/api/docs/
-- Admin: http://localhost:8000/admin/
+- Admin: http://localhost:8000/warmline-admin/
 
 ## Project layout
 
@@ -163,7 +163,46 @@ ruff check .
 ruff format .
 ```
 
-## Production
+## Production with Docker
+
+`Dockerfile` is a multi-stage build (dependencies in a builder stage; a slim, non-root runtime with static files
+and bytecode built in). `compose.yaml` runs PostgreSQL, the API (gunicorn, threaded workers; migrations applied on
+start), the nightly alert scheduler, and optionally Caddy with automatic HTTPS. Build on the server itself, so the
+image matches its CPU (a Mac builds ARM images; most servers are x86).
+
+On the server (Docker Engine with the Compose plugin):
+
+```bash
+git clone git@github.com:abdulhalimchy/Backend-Junction-2026.git warmline-backend && cd warmline-backend
+cp .env.production.example .env
+nano .env                     # DJANGO_SECRET_KEY, POSTGRES_PASSWORD, hosts/origins, API keys, DOMAIN
+```
+
+Then pick how HTTPS is handled:
+
+```bash
+# A) Caddy in compose gets the certificate (DNS for DOMAIN points here; ports 80 and 443 open)
+docker compose --profile https up -d --build
+
+# B) nginx on the server: the API listens on 127.0.0.1:8000. Site config, with the install and certbot
+#    steps in its header: docker/nginx/warmline-api.conf
+docker compose up -d --build
+```
+
+Day to day:
+
+```bash
+docker compose ps                                   # web should be "healthy"
+docker compose logs -f web scheduler
+docker compose exec web python manage.py createsuperuser
+git pull && docker compose up -d --build            # deploy a new version (migrations run on start)
+docker compose exec db pg_dump -U warmline warmline > backup.sql
+```
+
+Data lives in the `postgres_data` and `media` volumes, so containers can be rebuilt freely. Point the frontend's
+`BACKEND_URL` at `https://<DOMAIN>`.
+
+## Production (without Docker)
 
 Set `DJANGO_SETTINGS_MODULE=config.settings.production`, `DJANGO_SECRET_KEY`, `DJANGO_ALLOWED_HOSTS`, `DATABASE_URL`, `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`. Then run:
 

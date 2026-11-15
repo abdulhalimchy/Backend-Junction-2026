@@ -1,0 +1,9 @@
+# Reverse proxy for the "https" compose profile. Caddy gets and renews a Let's Encrypt certificate for
+# $DOMAIN automatically (its DNS A record must point at this server, with ports 80 and 443 open).
+{$DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size 25MB # pitch-deck uploads (DECK_CHECK_MAX_UPLOAD_MB is 20 by default)
+	}
+	reverse_proxy web:8000
+}

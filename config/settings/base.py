@@ -206,6 +206,8 @@ SPECTACULAR_SETTINGS = {
 # CORS (the Next.js frontend)
 # ---------------------------------------------------------------------------
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+# Any origin may call the API (CORS_ALLOWED_ORIGINS is then ignored). For early deployments only.
+CORS_ALLOW_ALL_ORIGINS = env.bool("CORS_ALLOW_ALL_ORIGINS", default=False)
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 
